@@ -48,15 +48,30 @@ export default function BusinessKYCReviewPage() {
     try {
       setLoading(true);
       
-      // Fetch all business profiles
+      // Load pending business profiles from localStorage (not yet approved)
+      const pendingBusinesses = JSON.parse(localStorage.getItem('pending_business_profiles') || '[]');
+      
+      // Fetch all business profiles from Juno (already approved)
       let profiles: any[] = [];
       try {
         const profilesResult = await listDocs<BusinessProfile>({ collection: "business_profiles", filter: {} });
-        profiles = (profilesResult && profilesResult.items) || [];
-        console.log("📋 Fetched business profiles:", profiles.length, profiles);
+        profiles = ((profilesResult && profilesResult.items) || []).map((item: any) => ({
+          ...item,
+          data: { ...item.data, isPending: false }
+        }));
+        console.log("📋 Fetched business profiles from Juno:", profiles.length);
       } catch (err) {
         console.log("No business_profiles collection found:", err);
       }
+      
+      // Add pending businesses from localStorage
+      const pendingBusinessDocs = pendingBusinesses.map((business: any) => ({
+        ...business,
+        data: { ...business.data, isPending: true }
+      }));
+      
+      profiles = [...pendingBusinessDocs, ...profiles];
+      console.log("📋 Total business profiles:", profiles.length, "(Pending:", pendingBusinessDocs.length, ")");
 
       // Fetch all business KYC documents
       let kycDocs: BusinessDoc[] = [];
@@ -102,19 +117,53 @@ export default function BusinessKYCReviewPage() {
 
   const handleApproveKYC = async (business: any) => {
     try {
-      await setDoc({
-        collection: "business_profiles",
-        doc: {
-          key: business.key,
-          data: {
-            ...business.data,
-            kycStatus: 'verified',
-            kycVerifiedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
+      const isPending = (business.data as any).isPending;
+      
+      if (isPending) {
+        // This is a pending business - save to Juno for the first time
+        const profileData = {
+          ...business.data,
+          kycStatus: 'verified',
+          kycVerifiedAt: new Date().toISOString(),
+          approvedAt: new Date().toISOString(),
+          approvedBy: user?.key || 'admin',
+          updatedAt: new Date().toISOString(),
+        };
+        
+        // Remove isPending flag
+        delete (profileData as any).isPending;
+        delete (profileData as any).status;
+        
+        // Save to Juno datastore for the first time
+        await setDoc({
+          collection: "business_profiles",
+          doc: {
+            key: business.key,
+            data: profileData,
           },
-          version: business.version,
-        },
-      });
+        });
+        
+        // Remove from localStorage
+        const pendingBusinesses = JSON.parse(localStorage.getItem('pending_business_profiles') || '[]');
+        const updatedPending = pendingBusinesses.filter((p: any) => p.key !== business.key);
+        localStorage.setItem('pending_business_profiles', JSON.stringify(updatedPending));
+        
+      } else {
+        // Already in Juno - just update
+        await setDoc({
+          collection: "business_profiles",
+          doc: {
+            key: business.key,
+            data: {
+              ...business.data,
+              kycStatus: 'verified',
+              kycVerifiedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+            version: business.version,
+          },
+        });
+      }
 
       alert('Business KYC approved successfully!');
       fetchBusinesses();

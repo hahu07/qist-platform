@@ -124,14 +124,26 @@ export default function BusinessProfileOnboardingPage() {
         return;
       }
 
-      // Save business profile
-      await setDoc({
-        collection: "business_profiles",
-        doc: {
-          key: user.key,
-          data: profileData,
+      // Save to localStorage (NOT to Juno yet - only admin approval saves to Juno)
+      const pendingBusinesses = JSON.parse(localStorage.getItem('pending_business_profiles') || '[]');
+      
+      // Remove any existing profile for this user
+      const filteredBusinesses = pendingBusinesses.filter((p: any) => p.key !== user.key);
+      
+      // Add new profile
+      filteredBusinesses.push({
+        key: user.key,
+        data: {
+          ...profileData,
+          submittedAt: new Date().toISOString(),
+          status: 'pending'
         },
+        owner: user.key,
       });
+      
+      localStorage.setItem('pending_business_profiles', JSON.stringify(filteredBusinesses));
+      
+      alert("Business profile submitted successfully! Your application will be reviewed by the admin.");
 
       // Redirect to KYC upload
       router.push("/business/kyc");

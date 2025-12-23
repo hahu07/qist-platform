@@ -316,21 +316,27 @@ export default function CorporateOnboardingPage() {
         unsubscribe?.();
         
         try {
-          // Check if profile already exists to get version
-          const existingDoc = await getDoc({
-            collection: "corporate_investor_profiles",
-            key: user.key
+          // Save to localStorage (NOT to Juno yet - only admin approval saves to Juno)
+          const pendingMembers = JSON.parse(localStorage.getItem('pending_member_profiles') || '[]');
+          
+          // Remove any existing profile for this user
+          const filteredMembers = pendingMembers.filter((p: any) => p.key !== user.key);
+          
+          // Add new profile
+          filteredMembers.push({
+            key: user.key,
+            data: {
+              ...result.data,
+              memberType: 'corporate',
+              submittedAt: new Date().toISOString(),
+              status: 'pending'
+            },
+            owner: user.key,
           });
           
-          // Save to Juno using user's key
-          await setDoc({
-            collection: "corporate_investor_profiles",
-            doc: {
-              key: user.key,
-              data: result.data,
-              ...(existingDoc && { version: existingDoc.version })
-            }
-          });
+          localStorage.setItem('pending_member_profiles', JSON.stringify(filteredMembers));
+          
+          alert("Profile submitted successfully! Your application will be reviewed by the admin.");
 
           router.push("/member/onboarding/success");
         } catch (err) {

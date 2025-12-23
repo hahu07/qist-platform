@@ -58,7 +58,10 @@ export default function KYCReviewPage() {
     try {
       setLoading(true);
       
-      // Try fetching from individual profiles first
+      // Load pending member profiles from localStorage (not yet approved)
+      const pendingMembers = JSON.parse(localStorage.getItem('pending_member_profiles') || '[]');
+      
+      // Try fetching from individual profiles first (already approved in Juno)
       let allInvestors: Investor[] = [];
       
       try {
@@ -67,7 +70,10 @@ export default function KYCReviewPage() {
           filter: {}
         });
         if (individualResult && individualResult.items) {
-          allInvestors = [...allInvestors, ...individualResult.items];
+          allInvestors = [...allInvestors, ...individualResult.items.map((item: any) => ({
+            ...item,
+            data: { ...item.data, isPending: false }
+          }))];
         }
       } catch (err) {
         console.log("No individual_investor_profiles collection found");
@@ -79,13 +85,24 @@ export default function KYCReviewPage() {
           filter: {}
         });
         if (corporateResult && corporateResult.items) {
-          allInvestors = [...allInvestors, ...corporateResult.items];
+          allInvestors = [...allInvestors, ...corporateResult.items.map((item: any) => ({
+            ...item,
+            data: { ...item.data, isPending: false }
+          }))];
         }
       } catch (err) {
         console.log("No corporate_investor_profiles collection found");
       }
+      
+      // Add pending members from localStorage (mark as pending)
+      const pendingInvestors = pendingMembers.map((member: any) => ({
+        ...member,
+        data: { ...member.data, isPending: true }
+      }));
+      
+      allInvestors = [...pendingInvestors, ...allInvestors];
 
-      console.log("📋 KYC Review - Investors fetched:", allInvestors.length);
+      console.log("📋 KYC Review - Investors fetched:", allInvestors.length, "(Pending:", pendingInvestors.length, ")");
       setInvestors(allInvestors);
     } catch (error) {
       console.error("Error fetching investors:", error);
@@ -96,15 +113,30 @@ export default function KYCReviewPage() {
 
   const fetchBusinesses = async () => {
     try {
-      // Fetch all business profiles
+      // Load pending business profiles from localStorage (not yet approved)
+      const pendingBusinesses = JSON.parse(localStorage.getItem('pending_business_profiles') || '[]');
+      
+      // Fetch all business profiles from Juno (already approved)
       let profiles: any[] = [];
       try {
         const profilesResult = await listDocs<any>({ collection: "business_profiles", filter: {} });
-        profiles = (profilesResult && profilesResult.items) || [];
-        console.log("📋 Fetched business profiles:", profiles.length, profiles);
+        profiles = ((profilesResult && profilesResult.items) || []).map((item: any) => ({
+          ...item,
+          data: { ...item.data, isPending: false }
+        }));
+        console.log("📋 Fetched business profiles from Juno:", profiles.length);
       } catch (err) {
         console.log("No business_profiles collection found:", err);
       }
+      
+      // Add pending businesses from localStorage
+      const pendingBusinessDocs = pendingBusinesses.map((business: any) => ({
+        ...business,
+        data: { ...business.data, isPending: true }
+      }));
+      
+      profiles = [...pendingBusinessDocs, ...profiles];
+      console.log("📋 Total business profiles:", profiles.length, "(Pending:", pendingBusinessDocs.length, ")");
 
       // Fetch all business applications
       const appsResult = await listDocs<any>({ collection: "business_applications", filter: {} });
@@ -395,21 +427,52 @@ export default function KYCReviewPage() {
 
   const handleApproveKYC = async (investor: Investor) => {
     try {
+      const isPending = (investor.data as any).isPending;
       const collection = investor.data.investorType === 'individual' 
         ? "individual_investor_profiles" 
         : "corporate_investor_profiles";
+      
+      if (isPending) {
+        // This is a pending member - save to Juno for the first time
+        const profileData = {
+          ...investor.data,
+          kycStatus: 'verified',
+          approvedAt: new Date().toISOString(),
+          approvedBy: user?.key || 'admin'
+        };
         
-      await setDoc({
-        collection,
-        doc: {
-          key: investor.key,
-          data: {
-            ...investor.data,
-            kycStatus: 'verified'
-          },
-          version: investor.version
-        }
-      });
+        // Remove isPending flag
+        delete (profileData as any).isPending;
+        delete (profileData as any).status;
+        
+        // Save to Juno datastore for the first time
+        await setDoc({
+          collection,
+          doc: {
+            key: investor.key,
+            data: profileData,
+          }
+        });
+        
+        // Remove from localStorage
+        const pendingMembers = JSON.parse(localStorage.getItem('pending_member_profiles') || '[]');
+        const updatedPending = pendingMembers.filter((p: any) => p.key !== investor.key);
+        localStorage.setItem('pending_member_profiles', JSON.stringify(updatedPending));
+        
+      } else {
+        // Already in Juno - just update
+        await setDoc({
+          collection,
+          doc: {
+            key: investor.key,
+            data: {
+              ...investor.data,
+              kycStatus: 'verified'
+            },
+            version: investor.version
+          }
+        });
+      }
       
       await fetchInvestors();
       setSelectedInvestor(null);
