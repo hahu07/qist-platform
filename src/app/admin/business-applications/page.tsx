@@ -2803,8 +2803,9 @@ export default function AdminApplicationsPage() {
                         setApprovalTerms(terms);
                         setShowApprovalForm(true);
                       }}
-                      disabled={processing}
+                      disabled={processing || calculateDueDiligenceScore() < 100}
                       className="flex-1 min-w-[160px] px-6 py-3.5 bg-success-600 hover:bg-success-700 disabled:bg-neutral-400 disabled:cursor-not-allowed text-white font-semibold rounded-xl shadow-sm hover:shadow-md transition-all"
+                      title={calculateDueDiligenceScore() < 100 ? `Complete due diligence first (${calculateDueDiligenceScore()}% done)` : 'Approve application'}
                     >
                       Approve Application
                     </button>
