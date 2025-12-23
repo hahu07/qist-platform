@@ -23,7 +23,6 @@ export default function BusinessReportingPage() {
   const [reports, setReports] = useState<Doc<RevenueReport>[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [uploadingDoc, setUploadingDoc] = useState(false);
-  const [documentsVerified, setDocumentsVerified] = useState<boolean>(false);
   const router = useRouter();
 
   // Form state
@@ -84,7 +83,6 @@ export default function BusinessReportingPage() {
       if (userApplication) {
         setApplicationId(userApplication.key);
         setBusinessName(userApplication.data.businessName);
-        setDocumentsVerified(userApplication.data.documentsVerified || false);
 
         // Fetch revenue reports
         const reportsResult = await listDocs<RevenueReport>({
@@ -318,12 +316,6 @@ export default function BusinessReportingPage() {
           >
             Revenue Reports
           </Link>
-          <Link
-            href="/business/documents"
-            className="px-4 py-2 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 font-semibold rounded-lg border-2 border-neutral-200 dark:border-neutral-800 whitespace-nowrap transition-all"
-          >
-            Documents
-          </Link>
         </div>
 
         {/* Page Header */}
@@ -334,37 +326,11 @@ export default function BusinessReportingPage() {
           </div>
           <button
             onClick={() => setShowForm(!showForm)}
-            disabled={!documentsVerified}
-            className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-semibold rounded-xl border-2 border-primary-700 shadow-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-semibold rounded-xl border-2 border-primary-700 shadow-lg transition-all active:scale-95"
           >
             {showForm ? "Cancel" : "+ New Report"}
           </button>
         </div>
-
-        {/* Document Verification Blocking Banner */}
-        {!documentsVerified && (
-          <div className="bg-error-50 dark:bg-error-900/20 border-2 border-error-200 dark:border-error-800 rounded-xl p-6 mb-6">
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-error-100 dark:bg-error-900/30 rounded-xl flex items-center justify-center flex-shrink-0">
-                <svg className="w-6 h-6 text-error-600 dark:text-error-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-bold text-error-900 dark:text-error-200 mb-2">Revenue Reporting Unavailable</h3>
-                <p className="text-error-700 dark:text-error-300 mb-4">
-                  You must complete document verification before you can submit revenue reports. Please upload and verify all required documents first.
-                </p>
-                <Link
-                  href="/business/documents"
-                  className="inline-flex items-center px-4 py-2 bg-error-600 hover:bg-error-700 text-white font-semibold rounded-lg transition-all"
-                >
-                  Complete Document Verification →
-                </Link>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
