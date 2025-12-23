@@ -211,11 +211,36 @@ export default function AdminApplicationsPage() {
   const fetchApplications = async () => {
     try {
       setLoading(true);
+      
+      // Load pending applications from localStorage (not yet approved)
+      const pendingApplications = JSON.parse(localStorage.getItem('pending_applications') || '[]');
+      
+      // Load approved applications from Juno (already approved and saved)
       const { items } = await listDocs<ApplicationData>({
         collection: "business_applications",
         filter: {}
       });
-      setApplications(items);
+      
+      // Combine both: pending (localStorage) + approved (Juno)
+      const allApplications = [
+        ...pendingApplications.map((app: any) => ({
+          ...app,
+          data: {
+            ...app.data,
+            status: app.data.status || 'pending',
+            isPending: true, // Mark as not yet in Juno
+          }
+        })),
+        ...items.map((app: any) => ({
+          ...app,
+          data: {
+            ...app.data,
+            isPending: false, // Mark as already in Juno
+          }
+        }))
+      ];
+      
+      setApplications(allApplications);
     } catch (error) {
       console.error("Error fetching applications:", error);
     } finally {
@@ -747,40 +772,82 @@ export default function AdminApplicationsPage() {
     try {
       setProcessing(true);
       
-      // Refetch latest version to avoid version conflicts
-      const latestDoc = await getDoc<ApplicationData>({
+      // Check if this is a pending application (from localStorage)
+      const isPending = (app.data as any).isPending;
+      
+      if (isPending) {
+        // This is a pending application - save it to Juno for the first time
+        const applicationData = {
+          ...app.data,
+          status: 'approved',
+          dueDiligence,
+          dueDiligenceNotes,
+          riskRating,
+          dueDiligenceScore: calculateDueDiligenceScore(),
+          reviewedBy: user?.key || 'admin',
+          reviewedAt: new Date().toISOString(),
+          approvedAt: new Date().toISOString(),
+        };
+        
+        // Remove isPending flag before saving
+        delete (applicationData as any).isPending;
+        
+        // Save to Juno datastore for the first time
+        await setDoc({
+          collection: "business_applications",
+          doc: {
+            key: app.key,
+            data: applicationData,
+          }
+        });
+        
+        // Remove from localStorage
+        const pendingApplications = JSON.parse(localStorage.getItem('pending_applications') || '[]');
+        const updatedPending = pendingApplications.filter((pending: any) => pending.key !== app.key);
+        localStorage.setItem('pending_applications', JSON.stringify(updatedPending));
+        
+      } else {
+        // This application is already in Juno - just update it
+        const latestDoc = await getDoc<ApplicationData>({
+          collection: "business_applications",
+          key: app.key
+        });
+
+        if (!latestDoc) {
+          throw new Error('Application not found');
+        }
+
+        // Validate status update
+        const validatedStatus = validateOrThrow(
+          applicationStatusSchema,
+          { status: 'approved' },
+          'Approve application'
+        );
+        
+        // Update application status with due diligence data and latest version
+        await setDoc({
+          collection: "business_applications",
+          doc: {
+            ...latestDoc,
+            data: {
+              ...latestDoc.data,
+              status: validatedStatus.status,
+              dueDiligence,
+              dueDiligenceNotes,
+              riskRating,
+              dueDiligenceScore: calculateDueDiligenceScore(),
+              reviewedBy: user?.key || 'admin',
+              reviewedAt: new Date().toISOString()
+            }
+          }
+        });
+      }
+      
+      // Get the application data (either newly saved or updated)
+      const approvedAppData = isPending ? app.data : (await getDoc<ApplicationData>({
         collection: "business_applications",
         key: app.key
-      });
-
-      if (!latestDoc) {
-        throw new Error('Application not found');
-      }
-
-      // Validate status update
-      const validatedStatus = validateOrThrow(
-        applicationStatusSchema,
-        { status: 'approved' },
-        'Approve application'
-      );
-      
-      // Update application status with due diligence data and latest version
-      await setDoc({
-        collection: "business_applications",
-        doc: {
-          ...latestDoc,
-          data: {
-            ...latestDoc.data,
-            status: validatedStatus.status,
-            dueDiligence,
-            dueDiligenceNotes,
-            riskRating,
-            dueDiligenceScore: calculateDueDiligenceScore(),
-            reviewedBy: user?.key || 'admin',
-            reviewedAt: new Date().toISOString()
-          }
-        }
-      });
+      }))!.data;
       
       // Create investment opportunity from approved application
       const today = new Date();
@@ -806,17 +873,17 @@ export default function AdminApplicationsPage() {
         ijarah: "ijarah"
       };
       
-      const mappedContractType = contractTypeMap[latestDoc.data.contractType] || "musharakah";
+      const mappedContractType = contractTypeMap[approvedAppData.contractType] || "musharakah";
       
       // Use manual terms from state instead of hardcoded values
       const opportunityData: OpportunityFormData = {
-        applicationId: latestDoc.key,
-        businessId: latestDoc.key,
-        businessName: latestDoc.data.businessName,
-        industry: latestDoc.data.industry,
-        description: latestDoc.data.businessDescription || `${latestDoc.data.businessName} - ${latestDoc.data.industry} investment opportunity`,
+        applicationId: app.key,
+        businessId: app.key,
+        businessName: approvedAppData.businessName,
+        industry: approvedAppData.industry,
+        description: approvedAppData.businessDescription || `${approvedAppData.businessName} - ${approvedAppData.industry} investment opportunity`,
         riskRating: "moderate",
-        fundingGoal: latestDoc.data.requestedAmount || latestDoc.data.amount || 0,
+        fundingGoal: approvedAppData.requestedAmount || (approvedAppData as any).amount || 0,
         currentFunding: 0,
         minimumInvestment: approvalTerms.minimumInvestment,
         contractType: mappedContractType,
@@ -840,14 +907,14 @@ export default function AdminApplicationsPage() {
       await setDoc({
         collection: "opportunities",
         doc: {
-          key: `opp_${latestDoc.key}`,
+          key: `opp_${app.key}`,
           data: validatedOpportunity
         }
       });
       
       await fetchApplications();
       setSelectedApplication(null);
-      alert(`Application approved! Investment opportunity created for ${latestDoc.data.businessName}`);
+      alert(`Application approved! Investment opportunity created for ${approvedAppData.businessName}`);
     } catch (error) {
       console.error('Error approving application:', error);
       alert(error instanceof Error ? error.message : 'Failed to approve application. Please try again.');

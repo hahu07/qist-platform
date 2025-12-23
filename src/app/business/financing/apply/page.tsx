@@ -278,15 +278,20 @@ export default function ApplyForFinancingPage() {
         return;
       }
 
-      // Save application
-      await setDoc({
-        collection: "business_applications",
-        doc: {
-          key: applicationKey,
-          data: applicationData,
+      // Save application to localStorage (NOT to Juno yet - only admin approval saves to Juno)
+      const pendingApplications = JSON.parse(localStorage.getItem('pending_applications') || '[]');
+      pendingApplications.push({
+        key: applicationKey,
+        data: {
+          ...applicationData,
+          submittedAt: new Date().toISOString(),
         },
+        owner: user.key,
       });
+      localStorage.setItem('pending_applications', JSON.stringify(pendingApplications));
 
+      alert("Application submitted successfully! It will be reviewed by the admin.");
+      
       // Redirect to dashboard
       router.push("/business/dashboard");
     } catch (err: any) {
