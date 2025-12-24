@@ -116,6 +116,25 @@ export {
   type WorkloadStats,
 } from "./assignment.schema";
 
+export {
+  AdminPermissionsSchema,
+  RolePermissionsMap,
+  AdminActionLogSchema,
+  DualAuthorizationSchema,
+  AdminSessionSchema,
+  getPermissionsForRole,
+  hasPermission,
+  canApproveAmount,
+  isWithinBusinessHours,
+  canApproveHighValue,
+  validateSeparationOfDuties,
+  requiresDualAuthorization,
+  type AdminPermissions,
+  type AdminActionLog,
+  type DualAuthorization,
+  type AdminSession,
+} from "./admin-roles.schema";
+
 // Phase 2: Messaging and collaboration schemas
 export {
   MessageSchema,

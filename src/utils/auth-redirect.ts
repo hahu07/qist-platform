@@ -18,7 +18,29 @@ export async function getAuthRedirectUrl(user: User | null | undefined): Promise
   }
 
   try {
-    // Try to get user's investor profile - check both individual and corporate
+    // PRIORITY 1: Check if user is an admin - admins bypass onboarding entirely
+    const adminProfile = await getDoc({
+      collection: "admin_profiles",
+      key: user.key,
+    });
+
+    if (adminProfile) {
+      const data = adminProfile.data as any;
+      
+      // Check if admin is active
+      if (data.isActive === true) {
+        return "/admin/dashboard";
+      } else {
+        // Inactive admin - show error or redirect to signin
+        return "/auth/signin?error=inactive_admin";
+      }
+    }
+
+    // Check if this user should be an admin but hasn't set up yet
+    // You can add logic here to check a whitelist or invite system
+    // For now, if user directly navigates to /admin/setup, they can create first super_admin
+
+    // PRIORITY 2: Try to get user's investor profile - check both individual and corporate
     let investorProfile = await getDoc({
       collection: "individual_investor_profiles",
       key: user.key,
@@ -39,7 +61,7 @@ export async function getAuthRedirectUrl(user: User | null | undefined): Promise
       return "/member/dashboard";
     }
 
-    // Try to get user's business profile
+    // PRIORITY 3: Try to get user's business profile
     const businessProfile = await getDoc({
       collection: "business_profiles",
       key: user.key,

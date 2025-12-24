@@ -69,7 +69,13 @@ function SignInPageContent() {
     try {
       setLoading(true);
       setError("");
-      await signIn({ google: {} });
+      await signIn({ google: {
+        options: {
+            redirect: {
+              redirectUrl: "http://localhost:3000/auth/callback/google",
+            },
+          },
+      } });
       await handleSuccessfulSignIn();
     } catch (err) {
       console.error("Google sign-in error:", err);

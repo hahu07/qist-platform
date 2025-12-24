@@ -1,0 +1,481 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { initSatellite, listDocs, setDoc, type Doc } from "@junobuild/core";
+import { 
+  AdminProfile, 
+  AdminProfileSchema,
+  getPermissionsForRole,
+  type AdminPermissions,
+  AdminActionLogSchema,
+} from "@/schemas";
+import { useRouter } from "next/navigation";
+
+interface AdminWithPermissions extends AdminProfile {
+  permissions: AdminPermissions;
+}
+
+export default function AdminTeamPage() {
+  const [admins, setAdmins] = useState<AdminWithPermissions[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedAdmin, setSelectedAdmin] = useState<AdminWithPermissions | null>(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [currentUserRole, setCurrentUserRole] = useState<string>("viewer");
+  const router = useRouter();
+
+  useEffect(() => {
+    (async () => {
+      await initSatellite({ workers: { auth: true } });
+      await loadAdmins();
+      await checkCurrentUserRole();
+    })();
+  }, []);
+
+  const checkCurrentUserRole = async () => {
+    // TODO: Implement actual user role check from authenticated user
+    // For now, assume manager role for demo
+    setCurrentUserRole("manager");
+  };
+
+  const loadAdmins = async () => {
+    try {
+      setLoading(true);
+      const { items } = await listDocs({
+        collection: "admin_profiles",
+        filter: {},
+      });
+
+      const adminsWithPermissions = items.map((item) => {
+        const admin = item.data as AdminProfile;
+        const permissions = getPermissionsForRole(admin.role);
+        return {
+          ...admin,
+          permissions,
+        };
+      });
+
+      setAdmins(adminsWithPermissions);
+    } catch (error) {
+      console.error("Error loading admins:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleEditAdmin = (admin: AdminWithPermissions) => {
+    setSelectedAdmin(admin);
+    setShowEditModal(true);
+  };
+
+  const handleSaveAdmin = async () => {
+    if (!selectedAdmin) return;
+
+    try {
+      await setDoc({
+        collection: "admin_profiles",
+        doc: {
+          key: selectedAdmin.userId,
+          data: {
+            ...selectedAdmin,
+            updatedAt: Date.now(),
+          },
+        },
+      });
+
+      // Log the action
+      await setDoc({
+        collection: "admin_audit_logs",
+        doc: {
+          key: `${selectedAdmin.userId}_${Date.now()}`,
+          data: {
+            adminId: "current_user_id", // TODO: Get from auth
+            adminName: "Current Admin",
+            adminRole: currentUserRole,
+            action: "update_admin",
+            targetCollection: "admin_profiles",
+            targetId: selectedAdmin.userId,
+            targetName: selectedAdmin.displayName,
+            timestamp: Date.now(),
+            success: true,
+          },
+        },
+      });
+
+      await loadAdmins();
+      setShowEditModal(false);
+      setSelectedAdmin(null);
+    } catch (error) {
+      console.error("Error saving admin:", error);
+      alert("Failed to save admin profile");
+    }
+  };
+
+  const handleCreateAdmin = () => {
+    const newAdmin: AdminWithPermissions = {
+      userId: `admin_${Date.now()}`,
+      displayName: "",
+      email: "",
+      role: "viewer",
+      approvalLimit: 0,
+      isActive: true,
+      specializations: [],
+      currentWorkload: 0,
+      maxWorkload: 10,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      permissions: getPermissionsForRole("viewer"),
+    };
+    setSelectedAdmin(newAdmin);
+    setShowEditModal(true);
+  };
+
+  const getRoleBadgeColor = (role: string) => {
+    switch (role) {
+      case "super_admin":
+        return "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200";
+      case "manager":
+        return "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200";
+      case "approver":
+        return "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200";
+      case "reviewer":
+        return "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200";
+      default:
+        return "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200";
+    }
+  };
+
+  const formatCurrency = (amount: number) => {
+    if (amount === Infinity) return "Unlimited";
+    return new Intl.NumberFormat("en-NG", {
+      style: "currency",
+      currency: "NGN",
+      minimumFractionDigits: 0,
+    }).format(amount);
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-lavender-blue-50 to-white dark:from-gray-900 dark:to-gray-800 p-8">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center py-12">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-lavender-blue-600 mx-auto"></div>
+            <p className="mt-4 text-gray-600 dark:text-gray-400">Loading admin team...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-lavender-blue-50 to-white dark:from-gray-900 dark:to-gray-800 p-8">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="flex justify-between items-center mb-8">
+          <div>
+            <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2">
+              Admin Team Management
+            </h1>
+            <p className="text-gray-600 dark:text-gray-400">
+              Manage administrator roles, permissions, and access levels
+            </p>
+          </div>
+          {(currentUserRole === "manager" || currentUserRole === "super_admin") && (
+            <button
+              onClick={handleCreateAdmin}
+              className="px-6 py-3 bg-lavender-blue-600 text-white rounded-xl border-[3px] border-black shadow-[8px_8px_0px_rgba(0,0,0,1)] hover:shadow-[4px_4px_0px_rgba(0,0,0,1)] active:translate-x-[4px] active:translate-y-[4px] active:shadow-none transition-all font-bold"
+            >
+              + Add Administrator
+            </button>
+          )}
+        </div>
+
+        {/* Stats Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border-[3px] border-black shadow-[8px_8px_0px_rgba(0,0,0,1)]">
+            <h3 className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Total Admins
+            </h3>
+            <p className="text-3xl font-bold text-gray-900 dark:text-white">{admins.length}</p>
+          </div>
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border-[3px] border-black shadow-[8px_8px_0px_rgba(0,0,0,1)]">
+            <h3 className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Active
+            </h3>
+            <p className="text-3xl font-bold text-green-600">
+              {admins.filter((a) => a.isActive).length}
+            </p>
+          </div>
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border-[3px] border-black shadow-[8px_8px_0px_rgba(0,0,0,1)]">
+            <h3 className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Managers
+            </h3>
+            <p className="text-3xl font-bold text-blue-600">
+              {admins.filter((a) => a.role === "manager" || a.role === "super_admin").length}
+            </p>
+          </div>
+          <div className="bg-white dark:bg-gray-800 p-6 rounded-xl border-[3px] border-black shadow-[8px_8px_0px_rgba(0,0,0,1)]">
+            <h3 className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Reviewers
+            </h3>
+            <p className="text-3xl font-bold text-purple-600">
+              {admins.filter((a) => a.role === "reviewer" || a.role === "approver").length}
+            </p>
+          </div>
+        </div>
+
+        {/* Admin List */}
+        <div className="bg-white dark:bg-gray-800 rounded-xl border-[3px] border-black shadow-[8px_8px_0px_rgba(0,0,0,1)] overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-lavender-blue-50 dark:bg-gray-700">
+                <tr>
+                  <th className="px-6 py-4 text-left text-sm font-bold text-gray-900 dark:text-white">
+                    Admin
+                  </th>
+                  <th className="px-6 py-4 text-left text-sm font-bold text-gray-900 dark:text-white">
+                    Role
+                  </th>
+                  <th className="px-6 py-4 text-left text-sm font-bold text-gray-900 dark:text-white">
+                    Approval Limit
+                  </th>
+                  <th className="px-6 py-4 text-left text-sm font-bold text-gray-900 dark:text-white">
+                    Workload
+                  </th>
+                  <th className="px-6 py-4 text-left text-sm font-bold text-gray-900 dark:text-white">
+                    Status
+                  </th>
+                  <th className="px-6 py-4 text-left text-sm font-bold text-gray-900 dark:text-white">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                {admins.map((admin) => (
+                  <tr
+                    key={admin.userId}
+                    className="hover:bg-lavender-blue-50 dark:hover:bg-gray-700 transition-colors"
+                  >
+                    <td className="px-6 py-4">
+                      <div>
+                        <div className="font-bold text-gray-900 dark:text-white">
+                          {admin.displayName}
+                        </div>
+                        <div className="text-sm text-gray-600 dark:text-gray-400">
+                          {admin.email}
+                        </div>
+                        {admin.department && (
+                          <div className="text-xs text-gray-500 dark:text-gray-500">
+                            {admin.department}
+                          </div>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <span
+                        className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${getRoleBadgeColor(
+                          admin.role
+                        )}`}
+                      >
+                        {admin.role.replace("_", " ").toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 text-gray-900 dark:text-white font-mono">
+                      {formatCurrency(admin.approvalLimit)}
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="text-sm text-gray-900 dark:text-white">
+                        {admin.currentWorkload} / {admin.maxWorkload}
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
+                        <div
+                          className="bg-lavender-blue-600 h-2 rounded-full"
+                          style={{
+                            width: `${(admin.currentWorkload / admin.maxWorkload) * 100}%`,
+                          }}
+                        ></div>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4">
+                      {admin.isActive ? (
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                          Active
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                          Inactive
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4">
+                      <button
+                        onClick={() => handleEditAdmin(admin)}
+                        disabled={
+                          currentUserRole !== "manager" && currentUserRole !== "super_admin"
+                        }
+                        className="px-4 py-2 bg-lavender-blue-600 text-white rounded-lg border-[2px] border-black shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:shadow-[2px_2px_0px_rgba(0,0,0,1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all text-sm font-bold disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Edit
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Edit Modal */}
+        {showEditModal && selectedAdmin && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white dark:bg-gray-800 rounded-xl border-[3px] border-black shadow-[8px_8px_0px_rgba(0,0,0,1)] max-w-2xl w-full max-h-[90vh] overflow-y-auto p-8">
+              <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-6">
+                {selectedAdmin.displayName ? "Edit Administrator" : "Create Administrator"}
+              </h2>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
+                    Display Name
+                  </label>
+                  <input
+                    type="text"
+                    value={selectedAdmin.displayName}
+                    onChange={(e) =>
+                      setSelectedAdmin({ ...selectedAdmin, displayName: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border-[3px] border-black rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
+                    Email
+                  </label>
+                  <input
+                    type="email"
+                    value={selectedAdmin.email}
+                    onChange={(e) =>
+                      setSelectedAdmin({ ...selectedAdmin, email: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border-[3px] border-black rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
+                    Role
+                  </label>
+                  <select
+                    value={selectedAdmin.role}
+                    onChange={(e) => {
+                      const newRole = e.target.value as "viewer" | "reviewer" | "approver" | "manager" | "super_admin";
+                      const permissions = getPermissionsForRole(newRole);
+                      setSelectedAdmin({
+                        ...selectedAdmin,
+                        role: newRole,
+                        approvalLimit: permissions.approvalLimit,
+                        permissions,
+                      });
+                    }}
+                    className="w-full px-4 py-2 border-[3px] border-black rounded-lg"
+                  >
+                    <option value="viewer">Viewer</option>
+                    <option value="reviewer">Reviewer</option>
+                    <option value="approver">Approver</option>
+                    <option value="manager">Manager</option>
+                    {currentUserRole === "super_admin" && (
+                      <option value="super_admin">Super Admin</option>
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
+                    Approval Limit
+                  </label>
+                  <input
+                    type="number"
+                    value={selectedAdmin.approvalLimit}
+                    readOnly
+                    className="w-full px-4 py-2 border-[3px] border-black rounded-lg bg-gray-100 dark:bg-gray-700"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Automatically set based on role
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-gray-700 dark:text-gray-300 mb-2">
+                    Department (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={selectedAdmin.department || ""}
+                    onChange={(e) =>
+                      setSelectedAdmin({ ...selectedAdmin, department: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border-[3px] border-black rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedAdmin.isActive}
+                      onChange={(e) =>
+                        setSelectedAdmin({ ...selectedAdmin, isActive: e.target.checked })
+                      }
+                      className="w-5 h-5 border-[3px] border-black rounded"
+                    />
+                    <span className="text-sm font-bold text-gray-700 dark:text-gray-300">
+                      Active
+                    </span>
+                  </label>
+                </div>
+
+                {/* Permissions Display */}
+                <div className="border-t-[3px] border-gray-200 pt-4">
+                  <h3 className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3">
+                    Permissions Preview
+                  </h3>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    {Object.entries(selectedAdmin.permissions).map(([key, value]) => (
+                      <div
+                        key={key}
+                        className={`flex items-center space-x-2 ${
+                          value ? "text-green-600" : "text-gray-400"
+                        }`}
+                      >
+                        <span>{value ? "✓" : "✗"}</span>
+                        <span>{key.replace(/([A-Z])/g, " $1").toLowerCase()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end space-x-4 mt-6">
+                <button
+                  onClick={() => {
+                    setShowEditModal(false);
+                    setSelectedAdmin(null);
+                  }}
+                  className="px-6 py-2 bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white rounded-lg border-[3px] border-black shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:shadow-[2px_2px_0px_rgba(0,0,0,1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveAdmin}
+                  className="px-6 py-2 bg-lavender-blue-600 text-white rounded-lg border-[3px] border-black shadow-[4px_4px_0px_rgba(0,0,0,1)] hover:shadow-[2px_2px_0px_rgba(0,0,0,1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all font-bold"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
