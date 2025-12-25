@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { BusinessProfile, ApplicationData, OpportunityFormData } from "@/schemas";
+import { logger } from "@/utils/logger";
 
 type User = {
   key: string;
@@ -87,7 +88,7 @@ export default function NewBusinessDashboardPage() {
 
       setOpportunities(userOpportunities);
     } catch (error) {
-      console.error("Error loading business data:", error);
+      logger.error("Error loading business data:", error);
       setError("Failed to load business data");
     }
   };

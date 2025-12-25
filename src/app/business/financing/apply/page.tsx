@@ -2,21 +2,35 @@
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthButton } from "@/components/auth-button";
-import { initSatellite, onAuthStateChange, setDoc, listDocs, uploadFile } from "@junobuild/core";
+import { initSatellite, onAuthStateChange, setDoc, listDocs, uploadFile, type Doc } from "@junobuild/core";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { BusinessProfile, ApplicationData } from "@/schemas";
 import { validateData } from "@/utils/validation";
 import { applicationDataSchema } from "@/schemas";
+import toast from "react-hot-toast";
+import { logger } from "@/utils/logger";
+import { validateStatusTransition, type ApplicationStatus } from "@/utils/application-status-machine";
+import { ErrorBoundary } from "@/components/error-boundary";
+import { StepIndicator } from "@/components/step-indicator";
+import { CharacterCountInput } from "@/components/character-count-input";
+import { ValidationErrorSummary, InlineErrorMessage } from "@/components/validation-error-summary";
+import { MurabahaFields } from "@/components/contracts/murabaha-fields";
+import { MudarabahFields } from "@/components/contracts/mudarabah-fields";
+import { MusharakahFields } from "@/components/contracts/musharakah-fields";
+import { IjarahFields } from "@/components/contracts/ijarah-fields";
+import { SalamFields } from "@/components/contracts/salam-fields";
+import type { MurabahaTerms, MudarabahTerms, MusharakahTerms, IjarahTerms, SalamTerms } from "@/schemas/islamic-contracts.schema";
 
 type User = {
   key: string;
 } | null | undefined;
 
-export default function ApplyForFinancingPage() {
+function ApplyForFinancingPageContent() {
   const [user, setUser] = useState<User>(undefined);
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
+  const [existingApplication, setExistingApplication] = useState<Doc<ApplicationData> | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -25,6 +39,7 @@ export default function ApplyForFinancingPage() {
   // Form state
   const [contractType, setContractType] = useState<ApplicationData["contractType"]>("musharaka");
   const [requestedAmount, setRequestedAmount] = useState<number>(100000);
+  const [fundingDuration, setFundingDuration] = useState<number>(12); // Default 12 months
   const [purpose, setPurpose] = useState("");
   const [businessPlan, setBusinessPlan] = useState("");
   const [revenueModel, setRevenueModel] = useState("");
@@ -32,6 +47,14 @@ export default function ApplyForFinancingPage() {
   const [useOfFunds, setUseOfFunds] = useState("");
   const [repaymentPlan, setRepaymentPlan] = useState("");
   const [collateralDescription, setCollateralDescription] = useState("");
+
+  // Contract-specific terms state
+  const [murabahaTerms, setMurabahaTerms] = useState<Partial<MurabahaTerms>>({});
+  const [mudarabahTerms, setMudarabahTerms] = useState<Partial<MudarabahTerms>>({});
+  const [musharakahTerms, setMusharakahTerms] = useState<Partial<MusharakahTerms>>({});
+  const [ijarahTerms, setIjarahTerms] = useState<Partial<IjarahTerms>>({});
+  const [salamTerms, setSalamTerms] = useState<Partial<SalamTerms>>({});
+  const [contractFieldErrors, setContractFieldErrors] = useState<{[key: string]: string}>({});
 
   // Document upload state
   const [bankStatement6Months, setBankStatement6Months] = useState<File[]>([]);
@@ -46,6 +69,8 @@ export default function ApplyForFinancingPage() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [fieldErrors, setFieldErrors] = useState<{[key: string]: string}>({});
   const [showReview, setShowReview] = useState(false);
+  const [currentStep, setCurrentStep] = useState(1);
+  const [resubmissionFiles, setResubmissionFiles] = useState<File[]>([]);
 
   useEffect(() => {
     (async () => await initSatellite({ workers: { auth: true } }))();
@@ -93,8 +118,21 @@ export default function ApplyForFinancingPage() {
       }
 
       setProfile(userProfile.data);
+
+      // Load existing application if any
+      const applicationsResult = await listDocs<ApplicationData>({
+        collection: "business_applications",
+      });
+
+      const userApp = applicationsResult.items.find(
+        (doc) => doc.key.startsWith(user.key) || doc.owner === user.key
+      );
+
+      if (userApp) {
+        setExistingApplication(userApp);
+      }
     } catch (error) {
-      console.error("Error loading profile:", error);
+      logger.error("Error loading profile:", error);
       setError("Failed to load business profile");
     }
   };
@@ -108,7 +146,7 @@ export default function ApplyForFinancingPage() {
       setStream(mediaStream);
       setShowCamera(true);
     } catch (err) {
-      console.error("Error accessing camera:", err);
+      logger.error("Error accessing camera:", err);
       setError("Unable to access camera. Please upload a file instead.");
       setTimeout(() => setError(""), 3000);
     }
@@ -158,7 +196,62 @@ export default function ApplyForFinancingPage() {
     if (!purpose || purpose.length < 50) errors.purpose = "Purpose must be at least 50 characters";
     if (directorsBVN.length === 0 || directorsBVN[0].length !== 11) errors.bvn = "BVN must be 11 digits";
     
-    if (Object.keys(errors).length > 0) {
+    // Contract-specific validation
+    const contractErrors: {[key: string]: string} = {};
+    
+    if (contractType === "murabaha") {
+      if (!murabahaTerms.assetDescription) contractErrors.assetDescription = "Asset description is required";
+      if (!murabahaTerms.costPrice || murabahaTerms.costPrice <= 0) contractErrors.costPrice = "Cost price must be greater than 0";
+      if (!murabahaTerms.profitRate || murabahaTerms.profitRate <= 0) contractErrors.profitRate = "Profit rate must be greater than 0";
+      if (!murabahaTerms.numberOfInstallments || murabahaTerms.numberOfInstallments < 1) contractErrors.numberOfInstallments = "Number of installments must be at least 1";
+    }
+    
+    if (contractType === "mudaraba") {  // Note: ApplicationData uses "mudaraba" not "mudarabah"
+      if (!mudarabahTerms.capitalAmount || mudarabahTerms.capitalAmount <= 0) contractErrors.capitalAmount = "Capital amount must be greater than 0";
+      if (!mudarabahTerms.businessActivity) contractErrors.businessActivity = "Business activity description is required";
+      if (!mudarabahTerms.investorProfitShare || mudarabahTerms.investorProfitShare <= 0) contractErrors.investorProfitShare = "Investor profit share must be greater than 0";
+      if (!mudarabahTerms.mudaribProfitShare || mudarabahTerms.mudaribProfitShare <= 0) contractErrors.mudaribProfitShare = "Mudarib profit share must be greater than 0";
+      if (mudarabahTerms.investorProfitShare && mudarabahTerms.mudaribProfitShare) {
+        const total = mudarabahTerms.investorProfitShare + mudarabahTerms.mudaribProfitShare;
+        if (Math.abs(total - 100) > 0.1) contractErrors.profitShare = "Total profit share must equal 100%";
+      }
+    }
+    
+    if (contractType === "musharaka") {
+      if (!musharakahTerms.businessPurpose) contractErrors.businessPurpose = "Business purpose is required";
+      if (!musharakahTerms.party1Name) contractErrors.party1Name = "Partner 1 name is required";
+      if (!musharakahTerms.party2Name) contractErrors.party2Name = "Partner 2 name is required";
+      if (!musharakahTerms.party1Capital || musharakahTerms.party1Capital <= 0) contractErrors.party1Capital = "Partner 1 capital must be greater than 0";
+      if (!musharakahTerms.party2Capital || musharakahTerms.party2Capital <= 0) contractErrors.party2Capital = "Partner 2 capital must be greater than 0";
+      if (!musharakahTerms.party1ProfitShare || musharakahTerms.party1ProfitShare <= 0) contractErrors.party1ProfitShare = "Partner 1 profit share must be greater than 0";
+      if (!musharakahTerms.party2ProfitShare || musharakahTerms.party2ProfitShare <= 0) contractErrors.party2ProfitShare = "Partner 2 profit share must be greater than 0";
+      if (musharakahTerms.party1ProfitShare && musharakahTerms.party2ProfitShare) {
+        const total = musharakahTerms.party1ProfitShare + musharakahTerms.party2ProfitShare;
+        if (Math.abs(total - 100) > 0.1) contractErrors.profitShare = "Total profit share must equal 100%";
+      }
+    }
+    
+    if (contractType === "ijara") {  // Note: ApplicationData uses "ijara" not "ijarah"
+      if (!ijarahTerms.assetDescription) contractErrors.assetDescription = "Asset description is required";
+      if (!ijarahTerms.assetValue || ijarahTerms.assetValue <= 0) contractErrors.assetValue = "Asset value must be greater than 0";
+      if (!ijarahTerms.monthlyRental || ijarahTerms.monthlyRental <= 0) contractErrors.monthlyRental = "Monthly rental must be greater than 0";
+      if (!ijarahTerms.leaseTerm || ijarahTerms.leaseTerm < 1) contractErrors.leaseTerm = "Lease term must be at least 1 month";
+    }
+    
+    if (contractType === "istisna") {  // Note: Using "istisna" but we don't have Istisna component yet - could map to Salam for now
+      if (!salamTerms.commodityDescription) contractErrors.commodityDescription = "Commodity description is required";
+      if (!salamTerms.quantity || salamTerms.quantity <= 0) contractErrors.quantity = "Quantity must be greater than 0";
+      if (!salamTerms.unit) contractErrors.unit = "Unit is required";
+      if (!salamTerms.qualitySpecifications || salamTerms.qualitySpecifications.length === 0) contractErrors.qualitySpecifications = "Quality specifications are required";
+      if (!salamTerms.agreedPrice || salamTerms.agreedPrice <= 0) contractErrors.agreedPrice = "Agreed price must be greater than 0";
+      if (!salamTerms.advancePayment || salamTerms.advancePayment <= 0) contractErrors.advancePayment = "Advance payment must be greater than 0";
+      if (!salamTerms.deliveryDate) contractErrors.deliveryDate = "Delivery date is required";
+      if (!salamTerms.deliveryLocation) contractErrors.deliveryLocation = "Delivery location is required";
+    }
+    
+    setContractFieldErrors(contractErrors);
+    
+    if (Object.keys(errors).length > 0 || Object.keys(contractErrors).length > 0) {
       setFieldErrors(errors);
       setError("Please fix the errors above");
       return;
@@ -175,7 +268,53 @@ export default function ApplyForFinancingPage() {
     setError("");
 
     try {
-      const applicationKey = `${user.key}_${Date.now()}`;
+      // Check for duplicate/pending applications before allowing new submission
+      if (!existingApplication || existingApplication.data.status === 'rejected') {
+        // Check if there's already a pending or approved application
+        const applicationsResult = await listDocs<ApplicationData>({
+          collection: "business_applications",
+        });
+        
+        const userApps = applicationsResult.items.filter(
+          (doc) => doc.key.startsWith(user.key) || doc.owner === user.key
+        );
+        
+        const hasPendingOrApproved = userApps.some(
+          (app) => app.data.status === 'pending' || app.data.status === 'approved' || app.data.status === 'review'
+        );
+        
+        if (hasPendingOrApproved) {
+          toast.error("You already have a pending or approved application. Please wait for review completion.");
+          setSubmitting(false);
+          return;
+        }
+      }
+      
+      // If resubmitting a rejected application, reuse the existing key
+      // Otherwise create a new key
+      const isResubmission = existingApplication && 
+        existingApplication.data.status === 'rejected' && 
+        existingApplication.data.rejectionAllowsResubmit !== false;
+      
+      // Validate status transition for resubmissions
+      if (isResubmission && existingApplication) {
+        const currentStatus = existingApplication.data.status as ApplicationStatus;
+        const transitionValidation = validateStatusTransition(currentStatus, "pending", {
+          isBusiness: true,
+          isResubmission: true,
+          rejectionAllowsResubmit: existingApplication.data.rejectionAllowsResubmit !== false,
+        });
+        
+        if (!transitionValidation.isValid) {
+          toast.error(transitionValidation.error || "Cannot resubmit this application");
+          setSubmitting(false);
+          return;
+        }
+      }
+      
+      const applicationKey = isResubmission 
+        ? existingApplication.key 
+        : `${user.key}_${Date.now()}`;
       
       // Upload all documents to Juno storage
       const uploadedDocs: Record<string, string[]> = {
@@ -261,13 +400,20 @@ export default function ApplyForFinancingPage() {
         businessDescription: businessPlan,
         contractType,
         requestedAmount,
-        fundingDuration: 12, // Default 12 months, make configurable
+        fundingDuration: fundingDuration, // User-configurable duration
         fundingPurpose: purpose,
         purpose,
         status: "pending",
         documentsSubmitted: true,
         documentsStatus: "uploaded",
         documents: uploadedDocs, // Store document URLs
+        // Add contract-specific terms based on selected type
+        contractTerms: contractType === "murabaha" ? murabahaTerms :
+                      contractType === "mudaraba" ? mudarabahTerms :
+                      contractType === "musharaka" ? musharakahTerms :
+                      contractType === "ijara" ? ijarahTerms :
+                      contractType === "istisna" ? salamTerms :
+                      undefined,
       };
 
       // Validate data
@@ -278,24 +424,36 @@ export default function ApplyForFinancingPage() {
         return;
       }
 
-      // Save application to localStorage (NOT to Juno yet - only admin approval saves to Juno)
-      const pendingApplications = JSON.parse(localStorage.getItem('pending_applications') || '[]');
-      pendingApplications.push({
-        key: applicationKey,
-        data: {
-          ...applicationData,
-          submittedAt: new Date().toISOString(),
+      // Save application to Juno datastore immediately
+      await setDoc({
+        collection: "business_applications",
+        doc: {
+          key: applicationKey,
+          data: {
+            ...applicationData,
+            submittedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            resubmittedAt: isResubmission ? new Date().toISOString() : undefined,
+            // Clear rejection fields when resubmitting
+            rejectionReason: undefined,
+            rejectionAllowsResubmit: undefined,
+            adminMessage: undefined,
+          },
+          // Include version if updating existing application
+          ...(isResubmission && existingApplication ? { version: existingApplication.version } : {}),
         },
-        owner: user.key,
       });
-      localStorage.setItem('pending_applications', JSON.stringify(pendingApplications));
 
-      alert("Application submitted successfully! It will be reviewed by the admin.");
+      const successMessage = isResubmission 
+        ? "Application resubmitted successfully! Your updated application will be reviewed by the admin."
+        : "Application submitted successfully! It will be reviewed by the admin.";
+      
+      toast.success(successMessage);
       
       // Redirect to dashboard
       router.push("/business/dashboard");
     } catch (err: any) {
-      console.error("Application error:", err);
+      logger.error("Application error:", err);
       setError(err.message || "Failed to submit application");
       setSubmitting(false);
     }
@@ -376,6 +534,21 @@ export default function ApplyForFinancingPage() {
 
       {/* Main Content */}
       <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
+        {/* Step Indicator */}
+        {!showReview && (
+          <StepIndicator
+            currentStep={currentStep}
+            totalSteps={5}
+            steps={[
+              { label: "Financing Type", description: "Select your preferred contract structure" },
+              { label: "Business Details", description: "Tell us about your business plan" },
+              { label: "Financial Information", description: "Market analysis and fund usage" },
+              { label: "Documents", description: "Upload required supporting documents" },
+              { label: "Review & Submit", description: "Verify your application before submission" },
+            ]}
+          />
+        )}
+
         <div className="mb-8">
           <h1 className="font-display font-bold text-3xl text-neutral-900 dark:text-white mb-2">
             Apply for Shariah-Compliant Financing
@@ -385,13 +558,129 @@ export default function ApplyForFinancingPage() {
           </p>
         </div>
 
+        {/* Application Rejection Notice */}
+        {existingApplication && existingApplication.data.status === "rejected" && (
+          <div className={`mb-6 p-6 border-2 rounded-lg ${
+            existingApplication.data.rejectionAllowsResubmit === false
+              ? 'bg-error-50 dark:bg-error-900/20 border-error-200 dark:border-error-800'
+              : 'bg-warning-50 dark:bg-warning-900/20 border-warning-200 dark:border-warning-800'
+          }`}>
+            <h3 className={`font-bold text-lg mb-2 ${
+              existingApplication.data.rejectionAllowsResubmit === false
+                ? 'text-error-800 dark:text-error-300'
+                : 'text-warning-800 dark:text-warning-300'
+            }`}>
+              {existingApplication.data.rejectionAllowsResubmit === false ? (
+                <>❌ Application Permanently Rejected</>
+              ) : (
+                <>⚠️ Application Rejected - Resubmission Allowed</>
+              )}
+            </h3>
+            <p className={`text-sm mb-3 ${
+              existingApplication.data.rejectionAllowsResubmit === false
+                ? 'text-error-700 dark:text-error-300'
+                : 'text-warning-700 dark:text-warning-300'
+            }`}>
+              <strong>Reason:</strong> {existingApplication.data.rejectionReason || existingApplication.data.adminMessage || "No reason provided"}
+            </p>
+            {existingApplication.data.rejectionAllowsResubmit === false ? (
+              <p className="text-sm text-error-700 dark:text-error-300 font-medium">
+                🚫 This application cannot be resubmitted. Please contact support if you believe this is an error.
+              </p>
+            ) : (
+              <p className="text-sm text-warning-700 dark:text-warning-300">
+                ✓ You can submit a new application below. Please address the rejection reason in your resubmission.
+              </p>
+            )}
+          </div>
+        )}
+
         {error && (
           <div className="mb-6 p-4 bg-red-50 dark:bg-red-900/20 border-2 border-red-200 dark:border-red-800 rounded-lg">
             <p className="text-red-700 dark:text-red-300 text-sm">{error}</p>
           </div>
         )}
 
+        {/* Disable form if permanently rejected */}
+        {existingApplication?.data.status === "rejected" && existingApplication.data.rejectionAllowsResubmit === false ? (
+          <div className="bg-neutral-100 dark:bg-neutral-800 rounded-xl p-8 border-2 border-neutral-300 dark:border-neutral-700 text-center">
+            <p className="text-neutral-600 dark:text-neutral-400 text-lg">
+              Application form is disabled due to permanent rejection.
+            </p>
+            <p className="text-neutral-500 dark:text-neutral-500 text-sm mt-2">
+              Please contact support for assistance.
+            </p>
+          </div>
+        ) : (
         <form onSubmit={handleReviewSubmit} className="space-y-8">
+          {/* Validation Error Summary */}
+          {Object.keys(fieldErrors).length > 0 && (
+            <ValidationErrorSummary 
+              errors={fieldErrors}
+              onErrorClick={(fieldName) => {
+                setFieldErrors(prev => {
+                  const { [fieldName]: removed, ...rest } = prev;
+                  return rest;
+                });
+              }}
+            />
+          )}
+
+          {/* Resubmission File Upload Section */}
+          {existingApplication && existingApplication.data.status === "rejected" && existingApplication.data.rejectionAllowsResubmit !== false && (
+            <div className="bg-warning-50 dark:bg-warning-900/20 rounded-xl p-6 border-2 border-warning-300 dark:border-warning-700">
+              <h3 className="font-bold text-lg text-warning-900 dark:text-warning-100 mb-3">
+                📎 Supporting Documents for Resubmission
+              </h3>
+              <p className="text-sm text-warning-700 dark:text-warning-300 mb-4" id="resubmission-reason">
+                Attach any additional documents that address the rejection reason:
+                <strong className="block mt-1">{existingApplication.data.rejectionReason}</strong>
+              </p>
+              <label htmlFor="resubmission-files" className="sr-only">
+                Upload supporting documents for resubmission
+              </label>
+              <input
+                id="resubmission-files"
+                type="file"
+                multiple
+                accept=".pdf,.jpg,.jpeg,.png"
+                onChange={(e) => {
+                  if (e.target.files) {
+                    setResubmissionFiles(Array.from(e.target.files));
+                  }
+                }}
+                aria-describedby="resubmission-reason"
+                aria-label="Upload supporting documents for resubmission"
+                className="block w-full text-sm text-neutral-500 dark:text-neutral-400
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-lg file:border-0
+                  file:text-sm file:font-semibold
+                  file:bg-warning-600 file:text-white
+                  hover:file:bg-warning-700
+                  file:cursor-pointer"
+              />
+              {resubmissionFiles.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-sm font-medium text-warning-800 dark:text-warning-200">
+                    Selected files ({resubmissionFiles.length}):
+                  </p>
+                  {resubmissionFiles.map((file, index) => (
+                    <div key={index} className="flex items-center justify-between text-sm bg-white dark:bg-neutral-800 rounded px-3 py-2">
+                      <span className="text-neutral-700 dark:text-neutral-300">{file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setResubmissionFiles(prev => prev.filter((_, i) => i !== index))}
+                        className="text-danger-600 hover:text-danger-700 dark:text-danger-400 dark:hover:text-danger-300"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Contract Type Selection */}
           <div className="bg-white dark:bg-neutral-900 rounded-xl p-6 border-2 border-neutral-200 dark:border-neutral-800">
             <h2 className="font-display font-bold text-xl text-neutral-900 dark:text-white mb-4">
@@ -435,6 +724,43 @@ export default function ApplyForFinancingPage() {
             </div>
           </div>
 
+          {/* Contract-Specific Fields */}
+          {contractType === "murabaha" && (
+            <MurabahaFields
+              terms={murabahaTerms}
+              onChange={(field, value) => setMurabahaTerms(prev => ({ ...prev, [field]: value }))}
+              errors={contractFieldErrors as Partial<Record<keyof MurabahaTerms, string>>}
+            />
+          )}
+          {contractType === "mudaraba" && (
+            <MudarabahFields
+              terms={mudarabahTerms}
+              onChange={(field, value) => setMudarabahTerms(prev => ({ ...prev, [field]: value }))}
+              errors={contractFieldErrors as Partial<Record<keyof MudarabahTerms, string>>}
+            />
+          )}
+          {contractType === "musharaka" && (
+            <MusharakahFields
+              terms={musharakahTerms}
+              onChange={(field, value) => setMusharakahTerms(prev => ({ ...prev, [field]: value }))}
+              errors={contractFieldErrors as Partial<Record<keyof MusharakahTerms, string>>}
+            />
+          )}
+          {contractType === "ijara" && (
+            <IjarahFields
+              terms={ijarahTerms}
+              onChange={(field, value) => setIjarahTerms(prev => ({ ...prev, [field]: value }))}
+              errors={contractFieldErrors as Partial<Record<keyof IjarahTerms, string>>}
+            />
+          )}
+          {contractType === "istisna" && (
+            <SalamFields
+              terms={salamTerms}
+              onChange={(field, value) => setSalamTerms(prev => ({ ...prev, [field]: value }))}
+              errors={contractFieldErrors as Partial<Record<keyof SalamTerms, string>>}
+            />
+          )}
+
           {/* Financing Amount */}
           <div className="bg-white dark:bg-neutral-900 rounded-xl p-6 border-2 border-neutral-200 dark:border-neutral-800">
             <h2 className="font-display font-bold text-xl text-neutral-900 dark:text-white mb-4">
@@ -442,18 +768,66 @@ export default function ApplyForFinancingPage() {
             </h2>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">
+                <label htmlFor="requestedAmount" className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">
                   Requested Amount (₦) *
                 </label>
                 <input
+                  id="requestedAmount"
+                  name="requestedAmount"
                   type="number"
                   value={requestedAmount}
-                  onChange={(e) => setRequestedAmount(parseInt(e.target.value))}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value);
+                    setRequestedAmount(value);
+                    if (value < 10000) {
+                      setFieldErrors(prev => ({...prev, requestedAmount: 'Minimum amount is ₦10,000'}));
+                    } else if (value > 100000000) {
+                      setFieldErrors(prev => ({...prev, requestedAmount: 'Maximum amount is ₦100,000,000'}));
+                    } else {
+                      setFieldErrors(prev => {const {requestedAmount, ...rest} = prev; return rest;});
+                    }
+                  }}
                   min={10000}
+                  max={100000000}
+                  required
+                  aria-required="true"
+                  aria-invalid={!!fieldErrors.requestedAmount}
+                  aria-describedby={fieldErrors.requestedAmount ? "requestedAmount-error requestedAmount-help" : "requestedAmount-help"}
+                  className={`w-full px-4 py-2 border-2 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white ${
+                    fieldErrors.requestedAmount ? 'border-red-500 dark:border-red-500' : 'border-neutral-300 dark:border-neutral-700'
+                  }`}
+                />
+                {fieldErrors.requestedAmount && (
+                  <p id="requestedAmount-error" className="text-sm text-red-600 dark:text-red-400 mt-1" role="alert">{fieldErrors.requestedAmount}</p>
+                )}
+                <p id="requestedAmount-help" className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                  Enter amount between ₦10,000 and ₦100,000,000
+                </p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">
+                  Funding Duration (Months) *
+                </label>
+                <select
+                  value={fundingDuration}
+                  onChange={(e) => setFundingDuration(parseInt(e.target.value))}
                   required
                   className="w-full px-4 py-2 border-2 border-neutral-300 dark:border-neutral-700 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white"
-                />
+                >
+                  <option value={6}>6 months</option>
+                  <option value={12}>12 months (1 year)</option>
+                  <option value={18}>18 months</option>
+                  <option value={24}>24 months (2 years)</option>
+                  <option value={36}>36 months (3 years)</option>
+                  <option value={48}>48 months (4 years)</option>
+                  <option value={60}>60 months (5 years)</option>
+                </select>
+                <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                  Select the period over which you plan to repay the financing
+                </p>
               </div>
+              
               <div>
                 <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">
                   Purpose of Financing *
@@ -1011,21 +1385,61 @@ export default function ApplyForFinancingPage() {
           </div>
 
           {/* Submit */}
-          <div className="flex justify-end gap-4">
-            <Link
-              href="/business/dashboard"
-              className="px-6 py-3 border-2 border-neutral-300 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 rounded-lg font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
-            >
-              Cancel
-            </Link>
-            <button
-              type="submit"
-              className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium transition-colors"
-            >
-              Review Application
-            </button>
+          <div className="flex justify-between items-center gap-4">
+            {currentStep > 1 && !showReview ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setCurrentStep(prev => Math.max(1, prev - 1));
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="px-6 py-3 border-2 border-neutral-300 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 rounded-lg font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+              >
+                ← Previous Step
+              </button>
+            ) : (
+              <Link
+                href="/business/dashboard"
+                className="px-6 py-3 border-2 border-neutral-300 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 rounded-lg font-medium hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+              >
+                Cancel
+              </Link>
+            )}
+            
+            {currentStep < 5 ? (
+              <button
+                type="button"
+                onClick={() => {
+                  // Basic validation before moving to next step
+                  if (currentStep === 1 && !contractType) {
+                    setFieldErrors(prev => ({...prev, contractType: 'Please select a financing type'}));
+                    return;
+                  }
+                  if (currentStep === 1 && (requestedAmount < 10000 || requestedAmount > 100000000)) {
+                    setFieldErrors(prev => ({...prev, requestedAmount: 'Invalid amount'}));
+                    return;
+                  }
+                  setCurrentStep(prev => Math.min(5, prev + 1));
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium transition-colors flex items-center gap-2"
+              >
+                Continue to Step {currentStep + 1}
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white rounded-lg font-medium transition-colors"
+              >
+                Review Application
+              </button>
+            )}
           </div>
         </form>
+        )}
       </main>
 
       {/* Review Page Modal */}
@@ -1150,5 +1564,14 @@ export default function ApplyForFinancingPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// Wrap with Error Boundary
+export default function ApplyForFinancingPage() {
+  return (
+    <ErrorBoundary>
+      <ApplyForFinancingPageContent />
+    </ErrorBoundary>
   );
 }

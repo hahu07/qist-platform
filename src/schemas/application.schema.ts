@@ -24,6 +24,7 @@ export const applicationDataSchema = z.object({
   contractType: z.enum(["murabaha", "musharaka", "mudaraba", "ijara", "istisna"], {
     message: "Invalid contract type"
   }),
+  contractTerms: z.any().optional(), // Contract-specific terms (Murabaha, Mudarabah, Musharakah, Ijarah, or Salam)
   requestedAmount: z.number()
     .positive("Amount must be positive"),
   fundingDuration: z.number()
@@ -66,6 +67,8 @@ export const applicationDataSchema = z.object({
   
   // Admin feedback and resubmission
   adminMessage: z.string().optional(),
+  rejectionReason: z.string().optional(),
+  rejectionAllowsResubmit: z.boolean().optional(), // If false, application cannot be resubmitted
   requestedAt: z.string().optional(),
   resubmittedAt: z.string().optional(),
   
@@ -143,3 +146,28 @@ export const applicationCreateSchema = applicationDataSchema.omit({ status: true
 export const applicationStatusSchema = z.object({
   status: z.enum(["new", "review", "approved", "rejected", "more-info"]),
 });
+
+/**
+ * Application Rejection Reasons
+ */
+export const applicationRejectionReasons = {
+  // Resubmittable reasons (fixable issues)
+  resubmittable: [
+    { value: "incomplete-documentation", label: "Incomplete or missing documentation" },
+    { value: "unclear-financials", label: "Financial statements are unclear or need clarification" },
+    { value: "insufficient-collateral-docs", label: "Collateral documentation is insufficient" },
+    { value: "business-plan-unclear", label: "Business plan or purpose needs more detail" },
+    { value: "requested-amount-high", label: "Requested amount too high - resubmit with lower amount" },
+    { value: "duration-too-long", label: "Funding duration too long - resubmit with shorter term" },
+  ],
+  // Permanent rejection reasons (eligibility issues)
+  permanent: [
+    { value: "business-ineligible", label: "Business type not eligible for Islamic financing" },
+    { value: "non-shariah-compliant", label: "Business activities not Shariah-compliant" },
+    { value: "poor-credit-history", label: "Unacceptable credit history or default records" },
+    { value: "insufficient-revenue", label: "Annual revenue too low for requested amount" },
+    { value: "fraudulent-information", label: "Fraudulent or false information detected" },
+    { value: "duplicate-application", label: "Duplicate application with existing approval" },
+    { value: "kyc-permanently-rejected", label: "KYC verification permanently rejected" },
+  ]
+} as const;

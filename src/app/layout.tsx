@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, Poppins } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
+import { Toaster } from "react-hot-toast";
 
 const inter = Inter({ 
   subsets: ["latin"],
@@ -70,6 +71,29 @@ export default function RootLayout({
         className={`${inter.variable} ${poppins.variable} font-sans antialiased h-full`}
       >
         <ThemeProvider defaultTheme="system" storageKey="amanatrade-theme">
+          <Toaster 
+            position="top-right"
+            toastOptions={{
+              duration: 4000,
+              style: {
+                background: 'var(--toast-bg)',
+                color: 'var(--toast-color)',
+                border: '1px solid var(--toast-border)',
+              },
+              success: {
+                iconTheme: {
+                  primary: '#10b981',
+                  secondary: '#fff',
+                },
+              },
+              error: {
+                iconTheme: {
+                  primary: '#ef4444',
+                  secondary: '#fff',
+                },
+              },
+            }}
+          />
           {children}
         </ThemeProvider>
       </body>

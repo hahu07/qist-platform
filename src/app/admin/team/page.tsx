@@ -10,6 +10,7 @@ import {
   AdminActionLogSchema,
 } from "@/schemas";
 import { useRouter } from "next/navigation";
+import { ErrorBoundary } from "@/components/error-boundary";
 
 interface AdminWithPermissions extends AdminProfile {
   permissions: AdminPermissions;
@@ -19,7 +20,7 @@ interface AdminDoc extends Doc<AdminProfile> {
   data: AdminWithPermissions;
 }
 
-export default function AdminTeamPage() {
+function AdminTeamPageContent() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [currentAdminProfile, setCurrentAdminProfile] = useState<AdminDoc | null>(null);
   const [admins, setAdmins] = useState<AdminDoc[]>([]);
@@ -85,7 +86,7 @@ export default function AdminTeamPage() {
       }
 
       // Check if user has permission to manage admins
-      const permissions = profile.data.permissions || getPermissionsForRole(profile.data.role);
+      const permissions = getPermissionsForRole(profile.data.role);
       if (!permissions.canManageAdmins && profile.data.role !== "super_admin") {
         setAuthError("You do not have permission to manage admin team members.");
         setLoading(false);
@@ -119,8 +120,8 @@ export default function AdminTeamPage() {
 
       const adminsWithPermissions = items.map((item) => {
         const admin = item.data;
-        // Use existing permissions from database if they exist, otherwise get role defaults
-        const permissions = admin.permissions || getPermissionsForRole(admin.role);
+        // Get role-based permissions
+        const permissions = getPermissionsForRole(admin.role);
         return {
           ...item,
           data: {
@@ -315,7 +316,6 @@ export default function AdminTeamPage() {
       maxWorkload: 10,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      createdBy: currentAdminProfile.key,
       permissions: getPermissionsForRole("viewer"),
     };
     
@@ -839,7 +839,7 @@ export default function AdminTeamPage() {
                   </label>
                   <input
                     type="number"
-                    value={selectedAdmin.approvalLimit}
+                    value={selectedAdmin.data.approvalLimit}
                     readOnly
                     className="w-full px-4 py-2 border-[3px] border-black rounded-lg bg-neutral-100 dark:bg-neutral-700"
                   />
@@ -1273,7 +1273,7 @@ export default function AdminTeamPage() {
                               checked={!!value}
                               onChange={(e) => {
                                 const newPermissions = { ...selectedAdmin.data.permissions };
-                                newPermissions[key as keyof AdminPermissions] = e.target.checked as any;
+                                (newPermissions as Record<string, boolean | number>)[key as keyof AdminPermissions] = e.target.checked;
                                 setSelectedAdmin({
                                   ...selectedAdmin,
                                   data: {
@@ -1411,5 +1411,14 @@ export default function AdminTeamPage() {
         )}
       </div>
     </div>
+  );
+}
+
+// Wrap with Error Boundary
+export default function AdminTeamPage() {
+  return (
+    <ErrorBoundary>
+      <AdminTeamPageContent />
+    </ErrorBoundary>
   );
 }

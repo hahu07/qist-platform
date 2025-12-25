@@ -5,8 +5,13 @@ import { initSatellite, onAuthStateChange, signOut, listDocs, getDoc, setDoc, ty
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { applicationDataSchema, applicationStatusSchema, opportunitySchema, type ApplicationData, type OpportunityFormData } from "@/schemas";
+import { applicationDataSchema, applicationStatusSchema, applicationRejectionReasons, opportunitySchema, type ApplicationData, type OpportunityFormData } from "@/schemas";
 import { validateOrThrow } from "@/utils/validation";
+import { validateStatusTransition, type ApplicationStatus } from "@/utils/application-status-machine";
+import toast from "react-hot-toast";
+import { ErrorBoundary } from "@/components/error-boundary";
+import { usePagination } from "@/hooks/usePagination";
+import { PaginationControls } from "@/components/pagination-controls";
 
 type User = {
   key: string;
@@ -55,7 +60,7 @@ interface DueDiligenceChecklist {
   };
 }
 
-export default function AdminApplicationsPage() {
+function AdminApplicationsPageContent() {
   const [user, setUser] = useState<User>(undefined);
   const [applications, setApplications] = useState<Application[]>([]);
   const [loading, setLoading] = useState(true);
@@ -188,6 +193,13 @@ export default function AdminApplicationsPage() {
   // Phase 1: Document Verification
   const [documentVerification, setDocumentVerification] = useState<{[key: string]: 'verified' | 'rejected' | 'pending'}>({});
   
+  // Rejection Dialog
+  const [showRejectionDialog, setShowRejectionDialog] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [rejectionAllowsResubmit, setRejectionAllowsResubmit] = useState(true);
+  const [customRejectionMessage, setCustomRejectionMessage] = useState('');
+  const [applicationToReject, setApplicationToReject] = useState<Application | null>(null);
+  
   const router = useRouter();
 
   // Auto-calculate risk score when financial ratios change
@@ -286,12 +298,16 @@ export default function AdminApplicationsPage() {
     return sortOrder === 'asc' ? comparison : -comparison;
   });
 
+  // Pagination
+  const pagination = usePagination(filteredApplications.length, 20);
+  const paginatedApplications = pagination.getPageItems(filteredApplications);
+
   // Phase 1: Bulk Selection Handlers
   const toggleSelectAll = () => {
-    if (selectedApplicationIds.length === filteredApplications.length) {
+    if (selectedApplicationIds.length === paginatedApplications.length) {
       setSelectedApplicationIds([]);
     } else {
-      setSelectedApplicationIds(filteredApplications.map(app => app.key));
+      setSelectedApplicationIds(paginatedApplications.map(app => app.key));
     }
   };
 
@@ -772,6 +788,19 @@ export default function AdminApplicationsPage() {
     try {
       setProcessing(true);
       
+      // Validate status transition
+      const currentStatus = app.data.status as ApplicationStatus;
+      const transitionValidation = validateStatusTransition(currentStatus, "approved", {
+        isAdmin: true,
+        hasRequiredFields: true,
+      });
+      
+      if (!transitionValidation.isValid) {
+        toast.error(transitionValidation.error || "Invalid status transition");
+        setProcessing(false);
+        return;
+      }
+      
       // Check if this is a pending application (from localStorage)
       const isPending = (app.data as any).isPending;
       
@@ -923,12 +952,31 @@ export default function AdminApplicationsPage() {
     }
   };
 
-  const handleReject = async (app: Application) => {
+  const handleReject = async () => {
+    if (!applicationToReject) return;
+    
+    if (!rejectionReason) {
+      toast.error('Please select a rejection reason');
+      return;
+    }
+    
+    // Validate status transition
+    const currentStatus = applicationToReject.data.status as ApplicationStatus;
+    const transitionValidation = validateStatusTransition(currentStatus, "rejected", {
+      isAdmin: true,
+      hasRequiredFields: !!rejectionReason,
+    });
+    
+    if (!transitionValidation.isValid) {
+      toast.error(transitionValidation.error || "Invalid status transition");
+      return;
+    }
+    
     try {
       setProcessing(true);
       const latestDoc = await getDoc<ApplicationData>({
         collection: "business_applications",
-        key: app.key
+        key: applicationToReject.key
       });
 
       if (!latestDoc) {
@@ -941,23 +989,37 @@ export default function AdminApplicationsPage() {
         'Reject application'
       );
       
+      // Find the label for the selected rejection reason
+      const allReasons = [...applicationRejectionReasons.resubmittable, ...applicationRejectionReasons.permanent];
+      const reasonLabel = allReasons.find((r: { value: string; label: string }) => r.value === rejectionReason)?.label || rejectionReason;
+      
       await setDoc({
         collection: "business_applications",
         doc: {
           ...latestDoc,
           data: {
             ...latestDoc.data,
-            status: validatedStatus.status
+            status: validatedStatus.status,
+            rejectionReason: reasonLabel,
+            rejectionAllowsResubmit: rejectionAllowsResubmit,
+            adminMessage: customRejectionMessage.trim() || reasonLabel,
           }
         }
       });
       
       await fetchApplications();
       setSelectedApplication(null);
-      setShowApprovalForm(false); // Reset approval form
+      setShowApprovalForm(false);
+      setShowRejectionDialog(false);
+      setRejectionReason('');
+      setCustomRejectionMessage('');
+      setRejectionAllowsResubmit(true);
+      setApplicationToReject(null);
+      
+      alert('Application rejected successfully');
     } catch (error) {
-      console.error('Error approving application:', error);
-      alert(error instanceof Error ? error.message : 'Failed to approve application. Please try again.');
+      console.error('Error rejecting application:', error);
+      alert(error instanceof Error ? error.message : 'Failed to reject application. Please try again.');
     } finally {
       setProcessing(false);
     }
@@ -1406,18 +1468,18 @@ export default function AdminApplicationsPage() {
                 <label className="flex items-center gap-3 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={selectedApplicationIds.length === filteredApplications.length && filteredApplications.length > 0}
+                    checked={selectedApplicationIds.length === paginatedApplications.length && paginatedApplications.length > 0}
                     onChange={toggleSelectAll}
                     className="w-4 h-4 text-primary-600 border-neutral-300 dark:border-neutral-600 rounded focus:ring-primary-500 dark:focus:ring-primary-400"
                   />
                   <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                    Select All ({filteredApplications.length})
+                    Select All on Page ({paginatedApplications.length})
                   </span>
                 </label>
               </div>
               
               <div className="divide-y divide-neutral-200 dark:divide-neutral-800">
-              {filteredApplications.map((app) => (
+              {paginatedApplications.map((app) => (
                 <div key={app.key} className="p-6 hover:bg-gradient-to-r hover:from-neutral-50 hover:to-transparent dark:hover:from-neutral-800/50 dark:hover:to-transparent transition-all group">
                   <div className="flex items-start gap-4">
                     {/* Checkbox */}
@@ -1550,6 +1612,23 @@ export default function AdminApplicationsPage() {
                 </div>
               ))}
             </div>
+            
+            {/* Pagination Controls */}
+            <PaginationControls
+              currentPage={pagination.currentPage}
+              totalPages={pagination.totalPages}
+              hasNextPage={pagination.hasNextPage}
+              hasPreviousPage={pagination.hasPreviousPage}
+              onGoToPage={pagination.goToPage}
+              onGoToNextPage={pagination.goToNextPage}
+              onGoToPreviousPage={pagination.goToPreviousPage}
+              onGoToFirstPage={pagination.goToFirstPage}
+              onGoToLastPage={pagination.goToLastPage}
+              itemsPerPage={20}
+              onSetItemsPerPage={pagination.setItemsPerPage}
+              totalItems={filteredApplications.length}
+              loading={loading}
+            />
             </>
           )}
         </div>
@@ -1557,34 +1636,33 @@ export default function AdminApplicationsPage() {
 
       {/* Application Review Modal */}
       {selectedApplication && (
-        <div className="fixed inset-0 z-50 overflow-y-auto">
-          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
-            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm transition-opacity" onClick={() => setSelectedApplication(null)} />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm transition-opacity" onClick={() => setSelectedApplication(null)} />
             
-            <div className="relative bg-white dark:bg-neutral-900 rounded-2xl max-w-5xl w-full shadow-2xl border border-neutral-200 dark:border-neutral-800">
-              {/* Modal Header */}
-              <div className="px-8 py-6 border-b border-neutral-200 dark:border-neutral-800">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h2 className="text-3xl font-bold text-neutral-900 dark:text-white mb-2">{selectedApplication.data.businessName}</h2>
-                    <div className="flex items-center gap-3 text-sm">
-                      <span className="px-3 py-1 bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 rounded-full font-medium capitalize">
-                        {selectedApplication.data.contractType}
-                      </span>
-                      <span className="text-neutral-500 dark:text-neutral-400">•</span>
-                      <span className="text-neutral-600 dark:text-neutral-400">{selectedApplication.data.industry}</span>
-                    </div>
+          <div className="relative bg-white dark:bg-neutral-900 rounded-2xl max-w-5xl w-full max-h-[90vh] shadow-2xl border border-neutral-200 dark:border-neutral-800 flex flex-col">
+            {/* Modal Header - Fixed */}
+            <div className="px-8 py-6 border-b border-neutral-200 dark:border-neutral-800 flex-shrink-0">
+              <div className="flex items-start justify-between">
+                <div>
+                  <h2 className="text-3xl font-bold text-neutral-900 dark:text-white mb-2">{selectedApplication.data.businessName}</h2>
+                  <div className="flex items-center gap-3 text-sm">
+                    <span className="px-3 py-1 bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300 rounded-full font-medium capitalize">
+                      {selectedApplication.data.contractType}
+                    </span>
+                    <span className="text-neutral-500 dark:text-neutral-400">•</span>
+                    <span className="text-neutral-600 dark:text-neutral-400">{selectedApplication.data.industry}</span>
                   </div>
-                  <button 
-                    onClick={() => setSelectedApplication(null)} 
-                    className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors"
-                  >
-                    <svg className="w-6 h-6 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
                 </div>
+                <button 
+                  onClick={() => setSelectedApplication(null)} 
+                  className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors"
+                >
+                  <svg className="w-6 h-6 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
+            </div>
 
               {/* Tabs Navigation */}
               <div className="px-8 border-b border-neutral-200 dark:border-neutral-800">
@@ -2887,7 +2965,10 @@ export default function AdminApplicationsPage() {
                       Request More Info
                     </button>
                     <button
-                      onClick={() => handleReject(selectedApplication)}
+                      onClick={() => {
+                        setApplicationToReject(selectedApplication);
+                        setShowRejectionDialog(true);
+                      }}
                       disabled={processing}
                       className="px-6 py-3.5 bg-white dark:bg-neutral-800 border border-error-300 dark:border-error-600 text-error-600 dark:text-error-400 hover:bg-error-50 dark:hover:bg-error-900/20 disabled:opacity-50 disabled:cursor-not-allowed font-semibold rounded-xl shadow-sm transition-all"
                     >
@@ -3013,6 +3094,239 @@ export default function AdminApplicationsPage() {
                   </div>
                 )}
               </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rejection Dialog Modal */}
+      {showRejectionDialog && applicationToReject && (
+        <div className="fixed inset-0 z-50 overflow-y-auto">
+          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20 text-center sm:p-0">
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm transition-opacity" onClick={() => setShowRejectionDialog(false)} />
+            
+            <div className="relative bg-white dark:bg-neutral-900 rounded-2xl max-w-3xl w-full shadow-2xl border border-neutral-200 dark:border-neutral-800">
+              {/* Modal Header */}
+              <div className="px-6 py-4 border-b border-neutral-200 dark:border-neutral-800">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold text-error-600 dark:text-error-400">Reject Application</h3>
+                    <p className="text-sm text-neutral-600 dark:text-neutral-400 mt-1">
+                      {applicationToReject.data.businessName}
+                    </p>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setShowRejectionDialog(false);
+                      setRejectionReason('');
+                      setCustomRejectionMessage('');
+                      setRejectionAllowsResubmit(true);
+                      setApplicationToReject(null);
+                    }}
+                    className="p-2 hover:bg-neutral-100 dark:hover:bg-neutral-800 rounded-lg transition-colors"
+                  >
+                    <svg className="w-5 h-5 text-neutral-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal Content */}
+              <div className="px-6 py-4 space-y-6">
+                {/* Rejection Type Selection */}
+                <div>
+                  <label className="block text-sm font-semibold text-neutral-900 dark:text-white mb-3">
+                    Rejection Type <span className="text-error-600">*</span>
+                  </label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setRejectionAllowsResubmit(true)}
+                      className={`p-4 rounded-lg border-2 transition-all text-left ${
+                        rejectionAllowsResubmit
+                          ? 'border-warning-500 bg-warning-50 dark:bg-warning-900/20'
+                          : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center mt-0.5 ${
+                          rejectionAllowsResubmit 
+                            ? 'border-warning-500 bg-warning-500' 
+                            : 'border-neutral-300 dark:border-neutral-600'
+                        }`}>
+                          {rejectionAllowsResubmit && (
+                            <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                        </div>
+                        <div>
+                          <div className="font-semibold text-neutral-900 dark:text-white">Fixable Issue</div>
+                          <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-1">
+                            Business can address concerns and resubmit
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                    
+                    <button
+                      type="button"
+                      onClick={() => setRejectionAllowsResubmit(false)}
+                      className={`p-4 rounded-lg border-2 transition-all text-left ${
+                        !rejectionAllowsResubmit
+                          ? 'border-error-500 bg-error-50 dark:bg-error-900/20'
+                          : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center mt-0.5 ${
+                          !rejectionAllowsResubmit 
+                            ? 'border-error-500 bg-error-500' 
+                            : 'border-neutral-300 dark:border-neutral-600'
+                        }`}>
+                          {!rejectionAllowsResubmit && (
+                            <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                        </div>
+                        <div>
+                          <div className="font-semibold text-neutral-900 dark:text-white">Permanent Rejection</div>
+                          <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-1">
+                            Business cannot resubmit this application
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Rejection Reason */}
+                <div>
+                  <label className="block text-sm font-semibold text-neutral-900 dark:text-white mb-3">
+                    Rejection Reason <span className="text-error-600">*</span>
+                  </label>
+                  
+                  {rejectionAllowsResubmit ? (
+                    <div className="space-y-2">
+                      <p className="text-xs text-neutral-600 dark:text-neutral-400 mb-2">
+                        Select a fixable issue that the business can address:
+                      </p>
+                      {applicationRejectionReasons.resubmittable.map((reason: { value: string; label: string }) => (
+                        <label
+                          key={reason.value}
+                          className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                            rejectionReason === reason.value
+                              ? 'border-warning-500 bg-warning-50 dark:bg-warning-900/20'
+                              : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="rejectionReason"
+                            value={reason.value}
+                            checked={rejectionReason === reason.value}
+                            onChange={(e) => setRejectionReason(e.target.value)}
+                            className="mt-1"
+                          />
+                          <span className="text-sm text-neutral-900 dark:text-white">
+                            {reason.label}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-xs text-neutral-600 dark:text-neutral-400 mb-2">
+                        Select a permanent eligibility issue:
+                      </p>
+                      {applicationRejectionReasons.permanent.map((reason: { value: string; label: string }) => (
+                        <label
+                          key={reason.value}
+                          className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                            rejectionReason === reason.value
+                              ? 'border-error-500 bg-error-50 dark:bg-error-900/20'
+                              : 'border-neutral-200 dark:border-neutral-700 hover:border-neutral-300 dark:hover:border-neutral-600'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="rejectionReason"
+                            value={reason.value}
+                            checked={rejectionReason === reason.value}
+                            onChange={(e) => setRejectionReason(e.target.value)}
+                            className="mt-1"
+                          />
+                          <span className="text-sm text-neutral-900 dark:text-white">
+                            {reason.label}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Custom Message (Optional) */}
+                <div>
+                  <label className="block text-sm font-semibold text-neutral-900 dark:text-white mb-3">
+                    Additional Message (Optional)
+                  </label>
+                  <textarea
+                    value={customRejectionMessage}
+                    onChange={(e) => setCustomRejectionMessage(e.target.value)}
+                    placeholder="Provide additional details or suggestions for the business..."
+                    rows={4}
+                    className="w-full px-4 py-3 bg-white dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-600 rounded-lg text-neutral-900 dark:text-white placeholder-neutral-400 dark:placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-primary-500 dark:focus:ring-primary-400 resize-none"
+                  />
+                </div>
+
+                {/* Warning Box */}
+                {!rejectionAllowsResubmit && (
+                  <div className="bg-error-50 dark:bg-error-900/20 border border-error-200 dark:border-error-800 rounded-lg p-4">
+                    <div className="flex items-start gap-3">
+                      <svg className="w-5 h-5 text-error-600 dark:text-error-400 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                      <div>
+                        <p className="text-sm font-semibold text-error-800 dark:text-error-300">
+                          Permanent Rejection Warning
+                        </p>
+                        <p className="text-xs text-error-700 dark:text-error-400 mt-1">
+                          This business will not be able to resubmit this application. They will need to contact support for assistance. Use this only for serious eligibility issues.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-6 py-4 border-t border-neutral-200 dark:border-neutral-800 flex justify-end gap-3">
+                <button
+                  onClick={() => {
+                    setShowRejectionDialog(false);
+                    setRejectionReason('');
+                    setCustomRejectionMessage('');
+                    setRejectionAllowsResubmit(true);
+                    setApplicationToReject(null);
+                  }}
+                  disabled={processing}
+                  className="px-5 py-2.5 bg-white dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700 font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleReject}
+                  disabled={processing || !rejectionReason}
+                  className={`px-5 py-2.5 font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                    rejectionAllowsResubmit
+                      ? 'bg-warning-600 hover:bg-warning-700 text-white'
+                      : 'bg-error-600 hover:bg-error-700 text-white'
+                  }`}
+                >
+                  {processing ? 'Rejecting...' : rejectionAllowsResubmit ? 'Reject (Resubmittable)' : 'Reject (Permanent)'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3074,5 +3388,14 @@ export default function AdminApplicationsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// Wrap with Error Boundary
+export default function AdminApplicationsPage() {
+  return (
+    <ErrorBoundary>
+      <AdminApplicationsPageContent />
+    </ErrorBoundary>
   );
 }

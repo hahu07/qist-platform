@@ -7,6 +7,10 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { BusinessProfile, ApplicationData, OpportunityFormData } from "@/schemas";
+import { logger } from "@/utils/logger";
+import { ApplicationTimeline } from "@/components/application-timeline";
+import { QuickStatsWidget } from "@/components/quick-stats-widget";
+import { RejectionHistoryView } from "@/components/rejection-history-view";
 
 type User = {
   key: string;
@@ -18,26 +22,31 @@ export default function BusinessDashboardV2() {
   const [application, setApplication] = useState<Doc<ApplicationData> | null>(null);
   const [opportunity, setOpportunity] = useState<Doc<OpportunityFormData> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authInitialized, setAuthInitialized] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
-    (async () => await initSatellite({ workers: { auth: true } }))();
+    (async () => {
+      await initSatellite({ workers: { auth: true } });
+      setAuthInitialized(true);
+    })();
   }, []);
 
   useEffect(() => {
+    if (!authInitialized) return;
+    
     const unsubscribe = onAuthStateChange((authUser) => {
       setUser(authUser);
       setLoading(false);
+      
+      // Only redirect if auth check is complete and user is null (not undefined)
+      if (authUser === null) {
+        router.push("/auth/signin");
+      }
     });
 
     return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!loading && !user) {
-      router.push("/auth/signin");
-    }
-  }, [user, loading, router]);
+  }, [authInitialized, router]);
 
   useEffect(() => {
     if (user) {
@@ -49,7 +58,7 @@ export default function BusinessDashboardV2() {
     if (!user) return;
 
     try {
-      // Load business profile
+      // Load business profile from Juno
       const profilesResult = await listDocs<BusinessProfile>({
         collection: "business_profiles",
       });
@@ -78,11 +87,11 @@ export default function BusinessDashboardV2() {
         const userApp = userApps.sort((a, b) => b.key.localeCompare(a.key))[0] || null;
 
         if (userApp) {
-          console.log("Found application:", userApp);
-          console.log("Documents submitted:", userApp.data.documentsSubmitted);
-          console.log("Documents:", userApp.data.documents);
+          logger.log("Found application:", userApp);
+          logger.log("Documents submitted:", userApp.data.documentsSubmitted);
+          logger.log("Documents:", userApp.data.documents);
         } else {
-          console.log("No application found for user");
+          logger.log("No application found for user");
         }
 
         setApplication(userApp || null);
@@ -100,10 +109,10 @@ export default function BusinessDashboardV2() {
           setOpportunity(businessOpp || null);
         }
       } catch (error) {
-        console.log("No financing application found");
+        logger.log("No financing application found");
       }
     } catch (error) {
-      console.error("Error loading business data:", error);
+      logger.error("Error loading business data:", error);
     }
   };
 
@@ -230,6 +239,13 @@ export default function BusinessDashboardV2() {
         )}
 
         {/* Dashboard Grid */}
+        <div className="mb-6">
+          <QuickStatsWidget 
+            application={application?.data || null}
+            submittedAt={application?.created_at ? new Date(Number(application.created_at) / 1000000).toISOString() : undefined}
+          />
+        </div>
+
         <div className="grid gap-6 lg:grid-cols-2">
           {/* Business Information Card */}
           <div className="bg-white dark:bg-neutral-900 rounded-2xl border-2 border-neutral-200 dark:border-neutral-800 p-6">
@@ -317,6 +333,17 @@ export default function BusinessDashboardV2() {
               </div>
             ) : (
               <div className="space-y-5">
+                {/* Application Timeline */}
+                <ApplicationTimeline 
+                  application={application.data} 
+                  submittedAt={application.created_at ? new Date(Number(application.created_at) / 1000000).toISOString() : undefined}
+                />
+                
+                {/* Rejection History (if rejected) */}
+                {application.data.status === 'rejected' && (
+                  <RejectionHistoryView application={application} />
+                )}
+                
                 <div>
                   <label className="text-xs font-medium text-neutral-500 dark:text-neutral-400 uppercase tracking-wider mb-2 block">Application Status</label>
                   <div className="inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold capitalize" style={{
@@ -364,6 +391,104 @@ export default function BusinessDashboardV2() {
                           </svg>
                           Resubmit Application
                         </Link>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Rejection Notice with Resubmit Option */}
+                {application.data.status === 'rejected' && (
+                  <div className={`relative overflow-hidden border-l-4 rounded-xl p-5 shadow-sm ${
+                    application.data.rejectionAllowsResubmit === false
+                      ? 'bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/20 dark:to-red-900/30 border-red-500 dark:border-red-600'
+                      : 'bg-gradient-to-br from-orange-50 to-amber-50 dark:from-orange-900/20 dark:to-amber-900/20 border-orange-500 dark:border-orange-600'
+                  }`}>
+                    <div className={`absolute top-0 right-0 w-32 h-32 rounded-full -mr-16 -mt-16 ${
+                      application.data.rejectionAllowsResubmit === false
+                        ? 'bg-red-400/10 dark:bg-red-400/5'
+                        : 'bg-orange-400/10 dark:bg-orange-400/5'
+                    }`}></div>
+                    <div className="relative flex items-start gap-4">
+                      <div className={`flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center ${
+                        application.data.rejectionAllowsResubmit === false
+                          ? 'bg-red-100 dark:bg-red-900/40'
+                          : 'bg-orange-100 dark:bg-orange-900/40'
+                      }`}>
+                        <svg className={`w-6 h-6 ${
+                          application.data.rejectionAllowsResubmit === false
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-orange-600 dark:text-orange-400'
+                        }`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-2">
+                          <h4 className={`text-base font-bold ${
+                            application.data.rejectionAllowsResubmit === false
+                              ? 'text-red-900 dark:text-red-200'
+                              : 'text-orange-900 dark:text-orange-200'
+                          }`}>
+                            {application.data.rejectionAllowsResubmit === false 
+                              ? 'Application Permanently Rejected' 
+                              : 'Application Rejected'}
+                          </h4>
+                          {application.data.rejectionAllowsResubmit !== false && (
+                            <span className="px-2 py-0.5 text-xs font-medium bg-orange-200 dark:bg-orange-800 text-orange-800 dark:text-orange-200 rounded-full">
+                              Can Resubmit
+                            </span>
+                          )}
+                        </div>
+                        
+                        {(application.data.rejectionReason || application.data.adminMessage) && (
+                          <div className="mb-4">
+                            <p className={`text-sm font-semibold mb-1 ${
+                              application.data.rejectionAllowsResubmit === false
+                                ? 'text-red-800 dark:text-red-300'
+                                : 'text-orange-800 dark:text-orange-300'
+                            }`}>
+                              Rejection Reason:
+                            </p>
+                            <div className={`text-sm leading-relaxed space-y-1 ${
+                              application.data.rejectionAllowsResubmit === false
+                                ? 'text-red-800 dark:text-red-300'
+                                : 'text-orange-800 dark:text-orange-300'
+                            }`}>
+                              {application.data.rejectionReason && (
+                                <p>{application.data.rejectionReason}</p>
+                              )}
+                              {application.data.adminMessage && application.data.rejectionReason !== application.data.adminMessage && (
+                                <p>{application.data.adminMessage}</p>
+                              )}
+                              {!application.data.rejectionReason && application.data.adminMessage && (
+                                <p>{application.data.adminMessage}</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {application.data.rejectionAllowsResubmit === false ? (
+                          <div className="bg-red-100 dark:bg-red-900/30 rounded-lg p-3 border border-red-200 dark:border-red-800">
+                            <p className="text-xs text-red-800 dark:text-red-300 leading-relaxed">
+                              🚫 This application cannot be resubmitted due to eligibility issues. Please contact support if you believe this is an error or need assistance.
+                            </p>
+                          </div>
+                        ) : (
+                          <>
+                            <p className="text-sm text-orange-800 dark:text-orange-300 leading-relaxed mb-4">
+                              ✓ You can address the concerns mentioned above and resubmit your application with the necessary corrections.
+                            </p>
+                            <Link
+                              href="/business/financing/apply"
+                              className="inline-flex items-center gap-2 px-5 py-2.5 bg-orange-600 hover:bg-orange-700 active:bg-orange-800 text-white text-sm font-semibold rounded-lg transition-all shadow-sm hover:shadow-md"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              </svg>
+                              Edit & Resubmit Application
+                            </Link>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -508,6 +633,7 @@ export default function BusinessDashboardV2() {
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <Link
                 href="/business/kyc"
+                prefetch={false}
                 className="flex items-center gap-3 p-4 border-2 border-neutral-200 dark:border-neutral-800 rounded-xl hover:border-primary-300 dark:hover:border-primary-700 hover:bg-primary-50/50 dark:hover:bg-primary-900/10 transition-colors"
               >
                 <div className="w-10 h-10 bg-primary-100 dark:bg-primary-900/30 rounded-lg flex items-center justify-center">

@@ -70,7 +70,10 @@ export async function getAuthRedirectUrl(user: User | null | undefined): Promise
     if (businessProfile) {
       const data = businessProfile.data as any;
       
-      if (data.status === "active" || data.status === "pending") {
+      // Check accountStatus (not status) and include all valid states
+      if (data.accountStatus === "active" || 
+          data.accountStatus === "pending-approval" || 
+          data.accountStatus === "suspended") {
         return "/business/dashboard";
       }
     }

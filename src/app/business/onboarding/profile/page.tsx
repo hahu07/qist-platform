@@ -3,11 +3,12 @@
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthButton } from "@/components/auth-button";
 import { initSatellite, onAuthStateChange, setDoc, listDocs } from "@junobuild/core";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { businessProfileSchema, type BusinessProfile } from "@/schemas";
 import { validateData } from "@/utils/validation";
+import { logger } from "@/utils/logger";
 
 type User = {
   key: string;
@@ -19,6 +20,7 @@ export default function BusinessProfileOnboardingPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const router = useRouter();
+  const formSubmittedRef = useRef(false);
 
   // Form state
   const [businessName, setBusinessName] = useState("");
@@ -65,7 +67,7 @@ export default function BusinessProfileOnboardingPage() {
   }, [user]);
 
   const checkExistingProfile = async () => {
-    if (!user) return;
+    if (!user || formSubmittedRef.current) return;
 
     try {
       const profilesResult = await listDocs<BusinessProfile>({
@@ -77,11 +79,16 @@ export default function BusinessProfileOnboardingPage() {
       );
 
       if (existingProfile) {
-        // Profile already exists, redirect to dashboard
-        router.push("/business/dashboard");
+        // If profile exists but KYC is not complete, redirect to KYC page
+        if (existingProfile.data.kycStatus === "pending" && !existingProfile.data.kycDocumentsUploaded) {
+          router.push("/business/kyc");
+        } else {
+          // Profile and KYC complete, redirect to dashboard
+          router.push("/business/dashboard");
+        }
       }
     } catch (error) {
-      console.error("Error checking profile:", error);
+      logger.error("Error checking profile:", error);
     }
   };
 
@@ -124,31 +131,26 @@ export default function BusinessProfileOnboardingPage() {
         return;
       }
 
-      // Save to localStorage (NOT to Juno yet - only admin approval saves to Juno)
-      const pendingBusinesses = JSON.parse(localStorage.getItem('pending_business_profiles') || '[]');
-      
-      // Remove any existing profile for this user
-      const filteredBusinesses = pendingBusinesses.filter((p: any) => p.key !== user.key);
-      
-      // Add new profile
-      filteredBusinesses.push({
-        key: user.key,
-        data: {
-          ...profileData,
-          submittedAt: new Date().toISOString(),
-          status: 'pending'
+      // Save to Juno datastore immediately with 'pending-approval' status
+      // This allows admin to see the profile even before document upload
+      await setDoc({
+        collection: "business_profiles",
+        doc: {
+          key: user.key,
+          data: {
+            ...profileData,
+            accountStatus: 'pending-approval', // Mark as pending admin approval
+          },
         },
-        owner: user.key,
       });
       
-      localStorage.setItem('pending_business_profiles', JSON.stringify(filteredBusinesses));
+      // Mark form as submitted to prevent checkExistingProfile from interfering
+      formSubmittedRef.current = true;
       
-      alert("Business profile submitted successfully! Your application will be reviewed by the admin.");
-
-      // Redirect to KYC upload
-      router.push("/business/kyc");
+      // Redirect to KYC upload immediately
+      await router.push("/business/kyc");
     } catch (err: any) {
-      console.error("Profile creation error:", err);
+      logger.error("Profile creation error:", err);
       setError(err.message || "Failed to create business profile");
       setSubmitting(false);
     }

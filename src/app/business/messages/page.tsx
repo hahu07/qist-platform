@@ -2,16 +2,38 @@
 
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AuthButton } from "@/components/auth-button";
-import { initSatellite, onAuthStateChange, uploadFile, type Doc } from "@junobuild/core";
+import { initSatellite, onAuthStateChange, listDocs, uploadFile, setDoc, type Doc } from "@junobuild/core";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import type { PlatformMessage } from "@/schemas";
+import type { BusinessProfile } from "@/schemas";
+import toast from "react-hot-toast";
+import { logger } from "@/utils/logger";
+import { validateFileWithPreset } from "@/utils/file-validation";
 import { getBusinessMessages, markMessageAsRead, respondToMessage } from "@/utils/platform-message-actions";
 
 type User = {
   key: string;
 } | null | undefined;
+
+type PlatformMessage = {
+  messageId: string;
+  from: string;
+  to: string;
+  fromName?: string;
+  toName?: string;
+  subject: string;
+  content: string;
+  attachments?: string[];
+  type: "info" | "request" | "warning" | "urgent";
+  status: "sent" | "read" | "responded";
+  sentAt: string;
+  readAt?: string;
+  responseContent?: string;
+  respondedAt?: string;
+  relatedReportId?: string;
+  businessName?: string;
+};
 
 export default function BusinessMessagesPage() {
   const [user, setUser] = useState<User>(undefined);
@@ -56,7 +78,7 @@ export default function BusinessMessagesPage() {
       const msgs = await getBusinessMessages(user.key);
       setMessages(msgs);
     } catch (error) {
-      console.error("Error loading messages:", error);
+      logger.error("Error loading messages:", error);
     } finally {
       setLoading(false);
     }
@@ -76,9 +98,17 @@ export default function BusinessMessagesPage() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
 
+    const file = e.target.files[0];
+
+    // Validate file using centralized utility
+    const validation = validateFileWithPreset(file, "message");
+    if (!validation.isValid) {
+      toast.error(validation.error || "Invalid file");
+      return;
+    }
+
     setUploadingFile(true);
     try {
-      const file = e.target.files[0];
       const result = await uploadFile({
         collection: "message_attachments",
         data: file,
@@ -86,8 +116,8 @@ export default function BusinessMessagesPage() {
 
       setResponseAttachments([...responseAttachments, result.downloadUrl]);
     } catch (error) {
-      console.error("Error uploading file:", error);
-      alert("Failed to upload file");
+      logger.error("Error uploading file:", error);
+      toast.error("Failed to upload file. Please try again.");
     } finally {
       setUploadingFile(false);
     }
@@ -112,11 +142,11 @@ export default function BusinessMessagesPage() {
         const updated = messages.find(m => m.key === selectedMessage.key);
         if (updated) setSelectedMessage(updated);
       } else {
-        alert(result.error || "Failed to send response");
+        toast.error(result.error || "Failed to send response");
       }
     } catch (error) {
-      console.error("Error sending response:", error);
-      alert("Failed to send response");
+      logger.error("Error sending response:", error);
+      toast.error("Failed to send response. Please try again.");
     } finally {
       setResponding(false);
     }
@@ -288,7 +318,7 @@ export default function BusinessMessagesPage() {
                     <div className="mt-6">
                       <h4 className="text-sm font-semibold text-neutral-700 dark:text-neutral-300 mb-3">Attachments</h4>
                       <div className="space-y-2">
-                        {selectedMessage.data.attachments.map((url, idx) => (
+                        {selectedMessage.data.attachments.map((url: string, idx: number) => (
                           <a
                             key={idx}
                             href={url}
@@ -342,16 +372,33 @@ export default function BusinessMessagesPage() {
                           type="file"
                           id="response-file"
                           onChange={handleFileUpload}
+                          disabled={uploadingFile}
                           className="hidden"
                         />
                         <label
                           htmlFor="response-file"
-                          className="inline-flex items-center gap-2 px-4 py-2 bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 rounded-lg hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
+                          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
+                            uploadingFile
+                              ? "bg-neutral-100 dark:bg-neutral-800 text-neutral-400 dark:text-neutral-600 cursor-not-allowed"
+                              : "bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700 cursor-pointer"
+                          }`}
                         >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
-                          </svg>
-                          {uploadingFile ? "Uploading..." : "Attach File"}
+                          {uploadingFile ? (
+                            <>
+                              <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              <span>Uploading...</span>
+                            </>
+                          ) : (
+                            <>
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                              </svg>
+                              <span>Attach File</span>
+                            </>
+                          )}
                         </label>
                         {responseAttachments.length > 0 && (
                           <span className="ml-2 text-xs text-neutral-600 dark:text-neutral-400">

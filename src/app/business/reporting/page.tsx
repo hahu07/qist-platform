@@ -9,6 +9,9 @@ import { useRouter } from "next/navigation";
 import { revenueReportSchema, calculateFinancialMetrics, type RevenueReport, type FinancialMetrics, type ApplicationData } from "@/schemas";
 import { validateData } from "@/utils/validation";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from "recharts";
+import toast from "react-hot-toast";
+import { logger } from "@/utils/logger";
+import { validateFileWithPreset } from "@/utils/file-validation";
 
 type User = {
   key: string;
@@ -102,7 +105,7 @@ export default function BusinessReportingPage() {
         router.push("/business/onboarding/profile");
       }
     } catch (error) {
-      console.error("Error fetching business data:", error);
+      logger.error("Error fetching business data:", error);
     } finally {
       setLoading(false);
     }
@@ -135,6 +138,13 @@ export default function BusinessReportingPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Validate file using centralized utility
+    const validation = validateFileWithPreset(file, "financial");
+    if (!validation.isValid) {
+      toast.error(validation.error || "Invalid file");
+      return;
+    }
+
     try {
       setUploadingDoc(true);
 
@@ -155,8 +165,8 @@ export default function BusinessReportingPage() {
         documents: [...(prev.documents || []), newDoc],
       }));
     } catch (error) {
-      console.error("Error uploading file:", error);
-      alert("Failed to upload file");
+      logger.error("Error uploading file:", error);
+      toast.error("Failed to upload file. Please try again.");
     } finally {
       setUploadingDoc(false);
     }
@@ -189,7 +199,7 @@ export default function BusinessReportingPage() {
         },
       });
 
-      alert("Revenue report submitted successfully!");
+      toast.success("Revenue report submitted successfully!");
       setShowForm(false);
       setFormData({
         reportingPeriod: "monthly",
@@ -205,8 +215,8 @@ export default function BusinessReportingPage() {
       });
       fetchBusinessData();
     } catch (error) {
-      console.error("Error submitting report:", error);
-      alert("Failed to submit report");
+      logger.error("Error submitting report:", error);
+      toast.error("Failed to submit report. Please try again.");
     } finally {
       setSaving(false);
     }

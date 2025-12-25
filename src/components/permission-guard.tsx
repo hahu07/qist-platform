@@ -162,7 +162,7 @@ export function ApprovalAmountGuard({
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = authSubscribe((authUser) => setUser(authUser));
+    const unsubscribe = onAuthStateChange((authUser) => setUser(authUser));
     return () => unsubscribe();
   }, []);
 

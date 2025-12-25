@@ -312,6 +312,11 @@ body {
   
   --color-surface: var(--color-white);
   --color-surface-elevated: var(--color-neutral-50);
+  
+  /* Toast notifications */
+  --toast-bg: #ffffff;
+  --toast-color: #0f172a;
+  --toast-border: #e2e8f0;
 }
 
 /* ============================================
@@ -350,6 +355,11 @@ body {
   
   --color-surface: var(--color-neutral-900);
   --color-surface-elevated: var(--color-neutral-800);
+  
+  /* Toast notifications - Dark mode */
+  --toast-bg: #1e293b;
+  --toast-color: #f1f5f9;
+  --toast-border: #334155;
 }
 
 /* ============================================

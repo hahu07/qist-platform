@@ -58,9 +58,10 @@ export const businessProfileSchema = z.object({
   kycSubmittedAt: z.string().optional(),
   kycVerifiedAt: z.string().optional(),
   kycRejectionReason: z.string().optional(),
+  kycRejectionAllowsResubmit: z.boolean().optional(), // If false, user cannot resubmit
   
   // Account Status
-  accountStatus: z.enum(["active", "suspended", "closed"]).default("active"),
+  accountStatus: z.enum(["pending-approval", "active", "suspended", "closed"]).default("active"),
   
   // Timestamps
   createdAt: z.string(),
@@ -74,19 +75,10 @@ export type BusinessProfile = z.infer<typeof businessProfileSchema>;
  */
 export const businessKycDocumentTypes = [
   "business-registration-certificate",
-  "certificate-of-incorporation",
-  "tax-identification-number",
   "memorandum-of-association",
-  "articles-of-association",
-  "directors-list",
-  "shareholders-list",
   "proof-of-business-address",
-  "bank-account-details",
-  "director-id-front",
-  "director-id-back",
-  "utility-bill",
-  "business-license",
   "status-report",
+  "business-license",
   "other"
 ] as const;
 
@@ -107,6 +99,7 @@ export const businessKycDocumentSchema = z.object({
   reviewedAt: z.string().optional(),
   reviewedBy: z.string().optional(),
   rejectionReason: z.string().optional(),
+  rejectionAllowsResubmit: z.boolean().optional(), // If false, permanent rejection
 });
 
 export type BusinessKycDocument = z.infer<typeof businessKycDocumentSchema>;
@@ -126,18 +119,33 @@ export const requiredBusinessKycDocuments: BusinessKycDocumentType[] = [
  */
 export const businessKycDocumentLabels: Record<BusinessKycDocumentType, string> = {
   "business-registration-certificate": "Business Registration Certificate (CAC/BN)",
-  "certificate-of-incorporation": "Certificate of Incorporation",
-  "tax-identification-number": "Tax Identification Number (TIN)",
   "memorandum-of-association": "Memorandum of Association",
-  "articles-of-association": "Articles of Association",
-  "directors-list": "List of Directors",
-  "shareholders-list": "List of Shareholders",
   "proof-of-business-address": "Proof of Business Address",
-  "bank-account-details": "Bank Account Details",
-  "director-id-front": "Director's ID (Front)",
-  "director-id-back": "Director's ID (Back)",
-  "utility-bill": "Utility Bill",
-  "business-license": "Business License/Permit",
   "status-report": "Status Report (CAC)",
+  "business-license": "Business License/Permit",
   "other": "Other Document"
 };
+
+/**
+ * KYC Rejection Reasons
+ */
+export const kycRejectionReasons = {
+  // Resubmittable reasons (document quality/completeness issues)
+  resubmittable: [
+    { value: "unclear-document", label: "Document is unclear or unreadable" },
+    { value: "incomplete-information", label: "Document has incomplete information" },
+    { value: "expired-document", label: "Document has expired" },
+    { value: "wrong-document-type", label: "Wrong document type uploaded" },
+    { value: "name-mismatch", label: "Name on document doesn't match profile" },
+    { value: "partial-document", label: "Only partial document uploaded" },
+  ],
+  // Permanent rejection reasons (eligibility/authenticity issues)
+  permanent: [
+    { value: "fraudulent-document", label: "Document appears fraudulent or forged" },
+    { value: "business-not-registered", label: "Business not found in official registry" },
+    { value: "business-suspended", label: "Business registration is suspended" },
+    { value: "ineligible-business-type", label: "Business type not eligible for platform" },
+    { value: "sanctioned-entity", label: "Business or owners are sanctioned" },
+    { value: "duplicate-registration", label: "Business already registered with different account" },
+  ]
+} as const;

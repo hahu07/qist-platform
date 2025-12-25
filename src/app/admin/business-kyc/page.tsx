@@ -1,11 +1,12 @@
 "use client";
 
 import { ThemeToggle } from "@/components/theme-toggle";
-import { initSatellite, onAuthStateChange, signOut, listDocs, setDoc, type Doc } from "@junobuild/core";
+import { initSatellite, onAuthStateChange, signOut, listDocs, setDoc, uploadFile, type Doc } from "@junobuild/core";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { BusinessProfile } from "@/schemas";
+import { kycRejectionReasons } from "@/schemas/business-profile.schema";
 
 type User = {
   key: string;
@@ -21,6 +22,8 @@ export default function BusinessKYCReviewPage() {
   const [selectedBusiness, setSelectedBusiness] = useState<any | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectTarget, setRejectTarget] = useState<{ type: 'kyc' | 'document', data: any } | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -48,32 +51,22 @@ export default function BusinessKYCReviewPage() {
     try {
       setLoading(true);
       
-      // Load pending business profiles from localStorage (not yet approved)
-      const pendingBusinesses = JSON.parse(localStorage.getItem('pending_business_profiles') || '[]');
-      
-      // Fetch all business profiles from Juno (already approved)
+      // Fetch all business profiles from Juno (including pending approval)
       let profiles: any[] = [];
       try {
         const profilesResult = await listDocs<BusinessProfile>({ collection: "business_profiles", filter: {} });
         profiles = ((profilesResult && profilesResult.items) || []).map((item: any) => ({
           ...item,
-          data: { ...item.data, isPending: false }
+          data: { ...item.data, isPending: item.data.accountStatus === 'pending-approval' }
         }));
         console.log("📋 Fetched business profiles from Juno:", profiles.length);
       } catch (err) {
         console.log("No business_profiles collection found:", err);
       }
       
-      // Add pending businesses from localStorage
-      const pendingBusinessDocs = pendingBusinesses.map((business: any) => ({
-        ...business,
-        data: { ...business.data, isPending: true }
-      }));
-      
-      profiles = [...pendingBusinessDocs, ...profiles];
-      console.log("📋 Total business profiles:", profiles.length, "(Pending:", pendingBusinessDocs.length, ")");
+      console.log("📋 Total business profiles:", profiles.length);
 
-      // Fetch all business KYC documents
+      // Fetch all business KYC documents from Juno
       let kycDocs: BusinessDoc[] = [];
       try {
         const kycDocsResult = await listDocs<any>({ collection: "business_kyc_documents", filter: {} });
@@ -92,9 +85,9 @@ export default function BusinessKYCReviewPage() {
         if (related.length === 0) {
           kycStatus = profile.data.kycDocumentsUploaded ? 'in-review' : 'pending';
         } else {
-          if (related.some((d) => d.data.status === 'rejected')) kycStatus = 'rejected';
-          else if (related.every((d) => d.data.status === 'verified') && related.length > 0) kycStatus = 'verified';
-          else if (related.some((d) => d.data.status === 'verified')) kycStatus = 'in-review';
+          if (related.some((d: any) => d.data.status === 'rejected')) kycStatus = 'rejected';
+          else if (related.every((d: any) => d.data.status === 'verified') && related.length > 0) kycStatus = 'verified';
+          else if (related.some((d: any) => d.data.status === 'verified')) kycStatus = 'in-review';
         }
         
         return {
@@ -120,33 +113,94 @@ export default function BusinessKYCReviewPage() {
       const isPending = (business.data as any).isPending;
       
       if (isPending) {
-        // This is a pending business - save to Juno for the first time
+        // This is a pending business - update status to active
         const profileData = {
           ...business.data,
           kycStatus: 'verified',
           kycVerifiedAt: new Date().toISOString(),
           approvedAt: new Date().toISOString(),
           approvedBy: user?.key || 'admin',
+          accountStatus: 'active', // Change from pending-approval to active
           updatedAt: new Date().toISOString(),
         };
         
         // Remove isPending flag
         delete (profileData as any).isPending;
-        delete (profileData as any).status;
         
-        // Save to Juno datastore for the first time
+        // Update profile in Juno
         await setDoc({
           collection: "business_profiles",
           doc: {
             key: business.key,
             data: profileData,
+            version: business.version,
           },
         });
         
-        // Remove from localStorage
-        const pendingBusinesses = JSON.parse(localStorage.getItem('pending_business_profiles') || '[]');
-        const updatedPending = pendingBusinesses.filter((p: any) => p.key !== business.key);
-        localStorage.setItem('pending_business_profiles', JSON.stringify(updatedPending));
+        // Upload documents with base64 URLs to Juno Storage
+        // Get all documents for this business
+        try {
+          const docsResult = await listDocs<any>({ collection: "business_kyc_documents", filter: {} });
+          const businessDocs = (docsResult.items || []).filter((doc: any) => doc.data.businessId === business.key);
+          
+          console.log(`📤 Uploading ${businessDocs.length} documents to Juno Storage for business ${business.key}`);
+          
+          for (const doc of businessDocs) {
+            try {
+              // Check if fileUrl is base64 (starts with data:)
+              if (doc.data.fileUrl.startsWith('data:')) {
+                // Convert base64 to blob
+                const response = await fetch(doc.data.fileUrl);
+                const blob = await response.blob();
+                const file = new File([blob], doc.data.fileName, { type: doc.data.mimeType });
+                
+                // Upload to Juno Storage
+                const uploadResult = await uploadFile({
+                  collection: "business_kyc_files",
+                  data: file,
+                });
+                
+                // Update document metadata with actual URL
+                await setDoc({
+                  collection: "business_kyc_documents",
+                  doc: {
+                    key: doc.key,
+                    data: {
+                      ...doc.data,
+                      fileUrl: uploadResult.downloadUrl, // Replace base64 with actual URL
+                      status: 'verified',
+                      reviewedAt: new Date().toISOString(),
+                      reviewedBy: user?.key || 'admin',
+                    },
+                    version: doc.version,
+                  },
+                });
+                
+                console.log(`✅ Uploaded ${doc.data.fileName}`);
+              } else {
+                // Document already has a real URL, just update status
+                await setDoc({
+                  collection: "business_kyc_documents",
+                  doc: {
+                    key: doc.key,
+                    data: {
+                      ...doc.data,
+                      status: 'verified',
+                      reviewedAt: new Date().toISOString(),
+                      reviewedBy: user?.key || 'admin',
+                    },
+                    version: doc.version,
+                  },
+                });
+              }
+            } catch (uploadError) {
+              console.error(`Failed to upload ${doc.data.fileName}:`, uploadError);
+              // Continue with other documents even if one fails
+            }
+          }
+        } catch (docError) {
+          console.error('Error processing documents:', docError);
+        }
         
       } else {
         // Already in Juno - just update
@@ -175,30 +229,71 @@ export default function BusinessKYCReviewPage() {
   };
 
   const handleRejectKYC = async (business: any) => {
-    const reason = prompt('Enter rejection reason:');
-    if (!reason) return;
+    setRejectTarget({ type: 'kyc', data: business });
+    setShowRejectModal(true);
+  };
+
+  const handleRejectDocument = async (doc: BusinessDoc) => {
+    setRejectTarget({ type: 'document', data: doc });
+    setShowRejectModal(true);
+  };
+
+  const processRejection = async (reason: string, allowsResubmit: boolean) => {
+    if (!rejectTarget) return;
 
     try {
-      await setDoc({
-        collection: "business_profiles",
-        doc: {
-          key: business.key,
-          data: {
-            ...business.data,
-            kycStatus: 'rejected',
-            kycRejectionReason: reason,
-            updatedAt: new Date().toISOString(),
+      if (rejectTarget.type === 'kyc') {
+        const business = rejectTarget.data;
+        await setDoc({
+          collection: "business_profiles",
+          doc: {
+            key: business.key,
+            data: {
+              ...business.data,
+              kycStatus: 'rejected',
+              kycRejectionReason: reason,
+              kycRejectionAllowsResubmit: allowsResubmit,
+              updatedAt: new Date().toISOString(),
+            },
+            version: business.version,
           },
-          version: business.version,
-        },
-      });
+        });
 
-      alert('Business KYC rejected');
+        alert(allowsResubmit 
+          ? 'Business KYC rejected. User can resubmit documents.' 
+          : 'Business KYC permanently rejected. User cannot resubmit.'
+        );
+      } else {
+        const doc = rejectTarget.data;
+        await setDoc({
+          collection: "business_kyc_documents",
+          doc: {
+            key: doc.key,
+            data: {
+              ...doc.data,
+              status: 'rejected',
+              rejectionReason: reason,
+              rejectionAllowsResubmit: allowsResubmit,
+              reviewedAt: new Date().toISOString(),
+              reviewedBy: user?.key,
+            },
+            version: doc.version,
+          },
+        });
+
+        alert(allowsResubmit 
+          ? 'Document rejected. User can re-upload this document.' 
+          : 'Document permanently rejected.'
+        );
+      }
+
       fetchBusinesses();
       setSelectedBusiness(null);
+      setShowRejectModal(false);
+      setRejectTarget(null);
     } catch (error) {
-      console.error('Error rejecting KYC:', error);
-      alert('Failed to reject KYC');
+      console.error('Error rejecting:', error);
+      alert('Failed to process rejection');
     }
   };
 
@@ -223,34 +318,6 @@ export default function BusinessKYCReviewPage() {
     } catch (error) {
       console.error('Error verifying document:', error);
       alert('Failed to verify document');
-    }
-  };
-
-  const handleRejectDocument = async (doc: BusinessDoc) => {
-    const reason = prompt('Enter rejection reason:');
-    if (!reason) return;
-
-    try {
-      await setDoc({
-        collection: "business_kyc_documents",
-        doc: {
-          key: doc.key,
-          data: {
-            ...doc.data,
-            status: 'rejected',
-            rejectionReason: reason,
-            reviewedAt: new Date().toISOString(),
-            reviewedBy: user?.key,
-          },
-          version: doc.version,
-        },
-      });
-
-      alert('Document rejected');
-      fetchBusinesses();
-    } catch (error) {
-      console.error('Error rejecting document:', error);
-      alert('Failed to reject document');
     }
   };
 
@@ -567,7 +634,21 @@ export default function BusinessKYCReviewPage() {
                           >
                             View
                           </a>
-                          {doc.data.status !== 'verified' && doc.data.status !== 'rejected' && (
+                          {doc.data.status === 'verified' ? (
+                            <button
+                              disabled
+                              className="px-3 py-1 bg-success-600 text-white rounded-lg text-sm cursor-not-allowed opacity-75"
+                            >
+                              ✓ Verified
+                            </button>
+                          ) : doc.data.status === 'rejected' ? (
+                            <button
+                              disabled
+                              className="px-3 py-1 bg-error-600 text-white rounded-lg text-sm cursor-not-allowed opacity-75"
+                            >
+                              ✗ Rejected
+                            </button>
+                          ) : (
                             <>
                               <button
                                 onClick={() => handleApproveDocument(doc)}
@@ -619,6 +700,82 @@ export default function BusinessKYCReviewPage() {
                   </>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rejection Modal */}
+      {showRejectModal && rejectTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-neutral-900 rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-neutral-200 dark:border-neutral-800">
+              <h3 className="text-xl font-bold text-neutral-900 dark:text-white">
+                {rejectTarget.type === 'kyc' ? 'Reject Business KYC' : 'Reject Document'}
+              </h3>
+              <p className="text-sm text-neutral-600 dark:text-neutral-400 mt-1">
+                Select rejection reason and type
+              </p>
+            </div>
+
+            <div className="p-6 space-y-6">
+              {/* Resubmittable Reasons */}
+              <div>
+                <h4 className="text-sm font-semibold text-neutral-900 dark:text-white mb-3 flex items-center gap-2">
+                  <span className="w-2 h-2 bg-warning-500 rounded-full"></span>
+                  Fixable Issues (User Can Resubmit)
+                </h4>
+                <div className="space-y-2">
+                  {kycRejectionReasons.resubmittable.map((reason) => (
+                    <button
+                      key={reason.value}
+                      onClick={() => processRejection(reason.label, true)}
+                      className="w-full text-left px-4 py-3 bg-warning-50 dark:bg-warning-900/20 hover:bg-warning-100 dark:hover:bg-warning-900/30 border border-warning-200 dark:border-warning-800 rounded-lg transition-colors"
+                    >
+                      <p className="text-sm font-medium text-warning-900 dark:text-warning-100">
+                        {reason.label}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Permanent Rejection Reasons */}
+              <div>
+                <h4 className="text-sm font-semibold text-neutral-900 dark:text-white mb-3 flex items-center gap-2">
+                  <span className="w-2 h-2 bg-error-500 rounded-full"></span>
+                  Permanent Rejection (No Resubmission)
+                </h4>
+                <div className="space-y-2">
+                  {kycRejectionReasons.permanent.map((reason) => (
+                    <button
+                      key={reason.value}
+                      onClick={() => {
+                        if (confirm(`PERMANENT REJECTION: "${reason.label}"\n\nThe user will NOT be able to resubmit. Continue?`)) {
+                          processRejection(reason.label, false);
+                        }
+                      }}
+                      className="w-full text-left px-4 py-3 bg-error-50 dark:bg-error-900/20 hover:bg-error-100 dark:hover:bg-error-900/30 border border-error-200 dark:border-error-800 rounded-lg transition-colors"
+                    >
+                      <p className="text-sm font-medium text-error-900 dark:text-error-100">
+                        {reason.label}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-neutral-200 dark:border-neutral-800">
+              <button
+                onClick={() => {
+                  setShowRejectModal(false);
+                  setRejectTarget(null);
+                }}
+                className="w-full px-4 py-3 bg-neutral-200 dark:bg-neutral-700 text-neutral-900 dark:text-white rounded-lg font-medium hover:bg-neutral-300 dark:hover:bg-neutral-600 transition-colors"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>
